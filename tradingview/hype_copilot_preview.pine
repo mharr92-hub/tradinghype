@@ -1,0 +1,261 @@
+//@version=6
+indicator("HYPE Copilot | PREVIEW visual", overlay = true, max_boxes_count = 150, max_lines_count = 300, max_labels_count = 100)
+
+// Visual research preview, not an execution signal or a certified PRD implementation.
+// Python remains authoritative. No orders, sizing, account state or realized costs.
+// Closed HTF values use [1] + lookahead_on: safe historical alignment, with a
+// conservative 5m delay at HTF boundaries relative to a Python close-time scan.
+// Compilation in TradingView and numerical parity are still pending.
+
+bool longF2 = input.bool(false, "LONG F2: exigir momentum completo")
+bool showGaps = input.bool(true, "Dibujar FVG")
+bool jsonAlerts = input.bool(true, "Alerta JSON de candidato para receptor de pruebas")
+float rr = input.float(1.6, "Brazo RR", options = [1.0, 1.6, 2.0])
+int levelHours = input.int(48, "Lookback pivotes 1H", minval = 5, maxval = 240)
+float bandK = input.float(0.30, "Banda VWAP / ATR", minval = 0.0)
+float bufferK = input.float(0.10, "Buffer SL / ATR", minval = 0.0)
+int gapAge = input.int(12, "Edad maxima FVG al toque", minval = 1, maxval = 24)
+int DAY = 86400000
+int HOUR = 3600000
+int BAR = 300000
+
+if barstate.isfirst and (timeframe.in_seconds() != 300 or not chart.is_standard)
+    runtime.error("Usar velas estandar de 5 minutos.")
+if barstate.isfirst and not str.contains(str.upper(syminfo.ticker), "HYPE")
+    runtime.error("Este indicador es exclusivamente para HYPE. Seleccionar el perpetual correcto.")
+
+f_fourHour() =>
+    float e20 = ta.ema(close, 20)
+    float e50 = ta.ema(close, 50)
+    float r = ta.rsi(close, 14)
+    [close[1], e20[1], e50[1], e50[4], r[1], bar_index[1]]
+
+f_oneHour() =>
+    float e20 = ta.ema(close, 20)
+    float e50 = ta.ema(close, 50)
+    [m, s, hist] = ta.macd(close, 12, 26, 9)
+    // n=2 pivot confirmed on this HTF bar; exported only on the next HTF bar.
+    bool ph = not na(high[4]) and high[2] >= high and high[2] >= high[1] and high[2] >= high[3] and high[2] >= high[4]
+    bool pl = not na(low[4]) and low[2] <= low and low[2] <= low[1] and low[2] <= low[3] and low[2] <= low[4]
+    float pivotH = ph ? high[2] : na
+    float pivotL = pl ? low[2] : na
+    [close[1], e20[1], e50[1], hist[1], hist[2], pivotH[1], pivotL[1], time[3], time[1], bar_index[1]]
+
+[c4, e204, e504, e504old, r4, n4] = request.security(syminfo.tickerid, "240", f_fourHour(), lookahead = barmerge.lookahead_on)
+[c1, e201, e501, mh1, mh1old, ph1, pl1, pivotTime, closedHour, n1] = request.security(syminfo.tickerid, "60", f_oneHour(), lookahead = barmerge.lookahead_on)
+
+int session = int(math.floor(time / DAY)) * DAY
+bool newSession = barstate.isfirst or session != session[1]
+var float pv = 0.0
+var float vv = 0.0
+var float dayHigh = na
+var float dayLow = na
+var float prevHigh = na
+var float prevLow = na
+var int dayBars = 0
+var bool completeSession = false
+var bool previousComplete = false
+
+if newSession
+    previousComplete := not barstate.isfirst and session == session[1] + DAY and completeSession and dayBars == 288
+    prevHigh := previousComplete ? dayHigh : na
+    prevLow := previousComplete ? dayLow : na
+    pv := 0.0
+    vv := 0.0
+    dayHigh := high
+    dayLow := low
+    dayBars := 0
+    completeSession := time == session
+else if time != time[1] + BAR
+    completeSession := false
+pv += hlc3 * volume
+vv += volume
+dayBars += 1
+dayHigh := math.max(dayHigh, high)
+dayLow := math.min(dayLow, low)
+float vw = vv > 0 ? pv / vv : na
+float atr = ta.sma(ta.tr(true), 20)
+float rsi = ta.rsi(close, 14)
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
+float avgVol = ta.sma(volume[1], 20)
+float volumeRatio = avgVol > 0 ? volume / avgVol : na
+
+bool regimeLong = n4 >= 54 and c4 > e204 and e204 > e504 and e504 > e504old
+bool regimeShort = n4 >= 54 and c4 < e204 and e204 < e504 and e504 < e504old and r4 <= 45
+bool alignLong = n1 >= 51 and c1 > e201 and e201 > e501
+bool alignShort = n1 >= 51 and c1 < e201 and e201 < e501 and mh1 < 0 and mh1 < mh1old
+bool momentumLong = rsi >= 50 and rsi <= 68 and rsi > rsi[1] and hist > hist[1] and hist[1] > hist[2] and vw > vw[1] and volumeRatio >= 1.0
+bool momentumShort = rsi >= 32 and rsi <= 48 and rsi < rsi[1] and hist < hist[1] and hist[1] < hist[2] and vw < vw[1] and volumeRatio >= 1.20
+
+type Level
+    float price
+    int ts
+    bool resistance
+var array<Level> levels = array.new<Level>()
+var int firstObservedHour = na
+var int lastCoverageBreak = 0
+if barstate.isfirst or time != time[1] + BAR
+    lastCoverageBreak := bar_index
+bool chartCoverage = bar_index - lastCoverageBreak >= (levelHours + 4) * 12
+
+type Gap
+    float lo
+    float hi
+    int formed
+    int touchedAt
+    float extreme
+    bool bull
+    box drawing
+var array<Gap> gaps = array.new<Gap>()
+
+f_clearance(bool bull, float entry, float risk) =>
+    float nearest = bull ? prevHigh : prevLow
+    if bull ? nearest <= entry : nearest >= entry
+        nearest := na
+    if array.size(levels) > 0
+        for j = 0 to array.size(levels) - 1
+            Level lv = array.get(levels, j)
+            bool ahead = bull ? lv.price > entry : lv.price < entry
+            if lv.resistance == bull and ahead
+                nearest := na(nearest) ? lv.price : bull ? math.min(nearest, lv.price) : math.max(nearest, lv.price)
+    bool clear = na(nearest) or math.abs(nearest - entry) / risk >= rr
+    [clear, nearest]
+
+bool candidateLong = false
+bool candidateShort = false
+float signalStop = na
+float signalLevel = na
+bool firstTouch = false
+var int lastCandidateClose = na
+
+if barstate.isconfirmed
+    if na(firstObservedHour) and not na(closedHour)
+        firstObservedHour := closedHour
+    if not na(closedHour) and (na(closedHour[1]) or closedHour != closedHour[1])
+        if not na(ph1)
+            array.push(levels, Level.new(ph1, pivotTime, true))
+        if not na(pl1)
+            array.push(levels, Level.new(pl1, pivotTime, false))
+    int k = array.size(levels) - 1
+    while k >= 0
+        if array.get(levels, k).ts < closedHour - (levelHours - 1) * HOUR
+            array.remove(levels, k)
+        k -= 1
+    if newSession
+        array.clear(gaps)
+
+    bool levelCoverage = not na(firstObservedHour) and closedHour - firstObservedHour >= (levelHours + 2) * HOUR
+    bool dataReady = completeSession and previousComplete and levelCoverage and chartCoverage and dayBars > 12 and not na(atr) and atr > 0 and not na(vw)
+    // Process all gaps even if trend/momentum fails, so a resolved retest never revives.
+    int i = 0
+    while i < array.size(gaps)
+        Gap g = array.get(gaps, i)
+        bool dead = g.bull ? close < g.lo : close > g.hi
+        bool confirmed = false
+        if not dead and na(g.touchedAt)
+            if bar_index - g.formed > gapAge
+                dead := true
+            else if g.bull ? low <= g.hi : high >= g.lo
+                bool overlap = not na(vw) and not na(atr) and g.lo <= vw + bandK * atr and g.hi >= vw - bandK * atr
+                if overlap
+                    g.touchedAt := bar_index
+                    g.extreme := g.bull ? math.min(low, g.lo) : math.max(high, g.hi)
+                    firstTouch := true
+                else
+                    dead := true
+        if not dead and not na(g.touchedAt)
+            g.extreme := g.bull ? math.min(g.extreme, low) : math.max(g.extreme, high)
+            bool structure = g.bull ? close > vw and close > g.hi and close > high[1] and close > open : close < vw and close < g.lo and close < low[1] and close < open
+            confirmed := bar_index - g.touchedAt <= 2 and structure
+            if confirmed
+                float stop = g.bull ? g.extreme - bufferK * atr : g.extreme + bufferK * atr
+                float risk = math.abs(close - stop)
+                bool directionOk = g.bull ? regimeLong and alignLong and (not longF2 or momentumLong) : regimeShort and alignShort and momentumShort
+                if dataReady and directionOk and risk > 0
+                    [clear, blocker] = f_clearance(g.bull, close, risk)
+                    if clear
+                        // Most recent confirming gap wins, as in the Python reference.
+                        candidateLong := g.bull
+                        candidateShort := not g.bull
+                        signalStop := stop
+                        signalLevel := blocker
+                dead := true
+            else if bar_index - g.touchedAt >= 2
+                dead := true
+        if not na(g.drawing)
+            box.set_right(g.drawing, bar_index)
+        if dead
+            array.remove(gaps, i)
+        else
+            i += 1
+
+    // A gap becomes knowable only at the close of its third candle.
+    if bar_index >= 2
+        bool bullGap = low > high[2]
+        bool bearGap = high < low[2]
+        if bullGap or bearGap
+            float lo = bullGap ? high[2] : high
+            float hi = bullGap ? low : low[2]
+            color gc = bullGap ? color.teal : color.maroon
+            box drawing = showGaps ? box.new(bar_index, hi, bar_index + 1, lo, border_color = color.new(gc, 40), bgcolor = color.new(gc, 88)) : na
+            array.push(gaps, Gap.new(lo, hi, bar_index, na, na, bullGap, drawing))
+
+    if candidateLong or candidateShort
+        lastCandidateClose := time_close
+        float direction = candidateLong ? 1.0 : -1.0
+        float risk = math.abs(close - signalStop)
+        color col = candidateLong ? color.teal : color.red
+        line.new(bar_index, close, bar_index + 12, close, color = color.gray)
+        line.new(bar_index, signalStop, bar_index + 12, signalStop, color = color.red, width = 2)
+        line.new(bar_index, close + direction * risk, bar_index + 12, close + direction * risk, color = color.new(color.green, 55))
+        line.new(bar_index, close + direction * 1.6 * risk, bar_index + 12, close + direction * 1.6 * risk, color = color.green, width = 2)
+        line.new(bar_index, close + direction * 2.0 * risk, bar_index + 12, close + direction * 2.0 * risk, color = color.new(color.green, 55))
+        string side = candidateLong ? "LONG" : "SHORT"
+        label.new(bar_index, candidateLong ? low : high, side + " CANDIDATO VISUAL\nReferencia " + str.tostring(close, format.mintick) + " | SL " + str.tostring(signalStop, format.mintick) + "\nRevalidacion Python pendiente", style = candidateLong ? label.style_label_up : label.style_label_down, color = col, textcolor = color.white, size = size.small)
+        if jsonAlerts
+            string candidateId = "hype-preview-v1:" + syminfo.tickerid + ":" + str.tostring(time_close) + ":" + side
+            string payload = "{\"schema\":\"hype.candidate.v1\",\"event\":\"candidate\",\"execution_authorized\":false"
+            payload += ",\"signal_id\":\"" + candidateId + "\",\"symbol\":\"" + syminfo.tickerid + "\",\"timeframe\":\"5m\",\"side\":\"" + side + "\""
+            payload += ",\"bar_close_ms\":" + str.tostring(time_close) + ",\"expires_at_ms\":" + str.tostring(time_close + 90000)
+            payload += ",\"entry_ref\":" + str.tostring(close, "0.##########") + ",\"structural_stop\":" + str.tostring(signalStop, "0.##########")
+            payload += ",\"rr\":" + str.tostring(rr, "0.0") + ",\"target_ref\":" + str.tostring(close + direction * rr * risk, "0.##########") + "}"
+            alert(payload, alert.freq_once_per_bar_close)
+
+plot(e204, "EMA20 4H cerrada", color = color.orange)
+plot(e504, "EMA50 4H cerrada", color = color.red)
+plot(e201, "EMA20 1H cerrada", color = color.aqua)
+plot(e501, "EMA50 1H cerrada", color = color.blue)
+plot(vw, "VWAP UTC", color = color.yellow, linewidth = 2)
+upper = plot(vw + bandK * atr, "VWAP + banda", color = color.new(color.yellow, 70))
+lower = plot(vw - bandK * atr, "VWAP - banda", color = color.new(color.yellow, 70))
+fill(upper, lower, color = color.new(color.yellow, 93))
+plot(prevHigh, "High dia UTC anterior completo", color = color.new(color.red, 60), style = plot.style_stepline)
+plot(prevLow, "Low dia UTC anterior completo", color = color.new(color.green, 60), style = plot.style_stepline)
+plot(rsi, "RSI14 5m", display = display.data_window)
+plot(hist, "MACD hist 5m", display = display.data_window)
+plot(volumeRatio, "Volumen / media20 previa", display = display.data_window)
+plot(signalLevel, "Primer obstaculo del candidato", display = display.data_window)
+plotshape(firstTouch, "Primer toque", shape.circle, location.belowbar, color = color.orange, size = size.tiny)
+plotshape(candidateLong, "Candidato LONG", shape.triangleup, location.belowbar, color = color.teal, size = size.small)
+plotshape(candidateShort, "Candidato SHORT", shape.triangledown, location.abovebar, color = color.red, size = size.small)
+
+// Human-readable alternatives to the candidate JSON alert above.
+alertcondition(candidateLong, "HYPE candidato visual LONG", "HYPE LONG visual en {{ticker}} 5m. Revalidar en Python; no autoriza una orden.")
+alertcondition(candidateShort, "HYPE candidato visual SHORT", "HYPE SHORT visual en {{ticker}} 5m. Revalidar en Python; no autoriza una orden.")
+
+var table panel = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 15))
+if barstate.islast
+    bool historyReady = completeSession and previousComplete and chartCoverage and not na(firstObservedHour) and closedHour - firstObservedHour >= (levelHours + 2) * HOUR
+    string age = na(lastCandidateClose) ? "Sin candidato" : str.tostring(math.max(0, timenow - lastCandidateClose) / 1000, "#") + " s"
+    table.cell(panel, 0, 0, "HYPE PREVIEW", text_color = color.yellow)
+    table.cell(panel, 1, 0, "SIN EJECUCION", text_color = color.yellow)
+    table.cell(panel, 0, 1, "Contexto HTF", text_color = color.white)
+    table.cell(panel, 1, 1, regimeLong and alignLong ? "LONG" : regimeShort and alignShort ? "SHORT" : "NO TRADE", text_color = color.white)
+    table.cell(panel, 0, 2, "Historial niveles", text_color = color.white)
+    table.cell(panel, 1, 2, historyReady ? "Disponible" : "Insuficiente", text_color = historyReady ? color.lime : color.orange)
+    table.cell(panel, 0, 3, "Ultimo candidato", text_color = color.white)
+    table.cell(panel, 1, 3, age, text_color = color.white)
+    table.cell(panel, 0, 4, "Size / costos / limites", text_color = color.white)
+    table.cell(panel, 1, 4, "PENDIENTE BACKEND", text_color = color.orange)
+    table.cell(panel, 0, 5, "RR visual", text_color = color.white)
+    table.cell(panel, 1, 5, str.tostring(rr) + "R | Python manda", text_color = color.white)

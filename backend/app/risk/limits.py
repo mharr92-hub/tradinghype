@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from ..strategies.hype.common import Config
-from ..indicators import session_start_ms
+from ..strategies.indicators import session_start_ms
 
 HOUR_MS = 60 * 60 * 1000
 
