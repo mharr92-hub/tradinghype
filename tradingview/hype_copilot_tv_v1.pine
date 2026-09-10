@@ -79,6 +79,10 @@ f_macdHist(src, f, s, sig) =>
 
 f_mark(b) => b ? "OK" : "-"
 
+// `str.tostring(na)` devuelve "NaN", y NaN NO es JSON válido: el webhook del
+// backend rechazaría el payload entero por un solo campo vacío. Se emite null.
+f_num(x) => na(x) ? "null" : str.tostring(x)
+
 // ═════ INDICADORES CON PARIDAD PYTHON ════════════════════════════════════════
 
 // ATR: Python usa MEDIA SIMPLE de True Range (`atr_at`), no la RMA de Wilder
@@ -378,17 +382,17 @@ f_json(side, entryV, stopV, rV, clearR, blockV) =>
       '","side":"' + side + '","tv_version":"v1"' +
       ',"bar_time":' + str.tostring(time) +
       ',"bar_close_time":' + str.tostring(time_close) +
-      ',"entry_reference":' + str.tostring(entryV) +
-      ',"stop_reference":' + str.tostring(stopV) +
-      ',"tp_reference":' + str.tostring(tp) +
+      ',"entry_reference":' + f_num(entryV) +
+      ',"stop_reference":' + f_num(stopV) +
+      ',"tp_reference":' + f_num(tp) +
       ',"rr":' + str.tostring(rrTarget) +
-      ',"fvg_low":' + str.tostring(gLo) +
-      ',"fvg_high":' + str.tostring(gHi) +
-      ',"vwap":' + str.tostring(vwapSes) +
-      ',"atr":' + str.tostring(atrPy) +
-      ',"rsi":' + str.tostring(rsi5) +
-      ',"macd_hist":' + str.tostring(mh5) +
-      ',"volume_ratio":' + str.tostring(volume / volAvgPrev) +
+      ',"fvg_low":' + f_num(gLo) +
+      ',"fvg_high":' + f_num(gHi) +
+      ',"vwap":' + f_num(vwapSes) +
+      ',"atr":' + f_num(atrPy) +
+      ',"rsi":' + f_num(rsi5) +
+      ',"macd_hist":' + f_num(mh5) +
+      ',"volume_ratio":' + f_num(nz(volAvgPrev,0) > 0 ? volume / volAvgPrev : na) +
       ',"clearance_r":' + str.tostring(math.min(clearR, 999)) +
       ',"clearance_level":' + (na(blockV) ? "null" : str.tostring(blockV)) +
       ',"session_bars":' + str.tostring(sessionBars) + '}'

@@ -1,0 +1,312 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// HYPE COPILOT TV v1 — VARIANTE STRATEGY (para el Strategy Tester)
+//
+// ⚠ LEE ESTO ANTES DE MIRAR LOS NÚMEROS ⚠
+//
+// Esta variante existe para responder UNA pregunta: ¿CON QUÉ FRECUENCIA aparece
+// el setup? Eso es un dato de investigación legítimo y hoy desconocido.
+//
+// NO responde si la estrategia gana. No puede, por cuatro motivos concretos:
+//
+//   1. TRADINGVIEW NO MODELA FUNDING. Con posiciones de hasta 24 h, un trade
+//      cruza hasta 24 liquidaciones horarias de Hyperliquid. En la medición
+//      del 2026-09-09 el funding era −5 % anualizado, es decir a favor del
+//      largo. Mañana puede ser en contra. El Strategy Tester lo ignora entero.
+//
+//   2. LA MUESTRA. Con máximo 1 trade/día, 10 días son COMO MUCHO 10 trades, y
+//      realistamente 2 o 3. Los kill criteria del proyecto exigen ≥60 señales
+//      para siquiera etiquetar un brazo. Un PF calculado sobre 3 trades no es
+//      un PF, es una anécdota con decimales.
+//
+//   3. EL FILL. TradingView llena a la apertura de la barra siguiente con un
+//      slippage fijo. No modela el drift de 0.10R ni los trades PERDIDOS por
+//      no llegar a tiempo, que en el motor Python sí se descuentan.
+//
+//   4. EL SÍMBOLO. Si el feed no es el perpetuo de Hyperliquid, esto backtestea
+//      OTRO MERCADO. Distinto volumen, distinto VWAP, distintos FVG.
+//
+// USO CORRECTO: mirar cuántas señales salen, en qué condiciones de mercado
+// aparecen, y si el dibujo se corresponde con lo que esperabas. Es un
+// microscopio, no una balanza.
+//
+// FUENTE DE VERDAD: sigue siendo Python. Este archivo es DERIVADO del
+// indicador; si se edita uno sin el otro, divergen. Cualquier cambio de reglas
+// se hace primero en `backend/app/strategies/hype/` y luego se replica aquí.
+// ─────────────────────────────────────────────────────────────────────────────
+
+strategy("HYPE COPILOT v1 — STRATEGY (frecuencia, no rentabilidad)",
+     overlay = true, initial_capital = 1000,
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     commission_type = strategy.commission.percent, commission_value = 0.045,
+     slippage = 2, calc_on_every_tick = false, process_orders_on_close = false,
+     max_boxes_count = 200, max_lines_count = 300, max_labels_count = 200)
+
+// ═════ INPUTS (idénticos al indicador) ═══════════════════════════════════════
+gS = "Estrategia (congelada)"
+emaFast   = input.int(20,     "EMA rápida",              group = gS)
+emaSlow   = input.int(50,     "EMA lenta",               group = gS)
+slopeLb   = input.int(3,      "EMA50 vs hace N barras",  group = gS)
+atrLen    = input.int(20,     "ATR",                     group = gS)
+bandAtr   = input.float(0.30, "Banda VWAP x ATR",        step = 0.05, group = gS)
+gapMaxAge = input.int(12,     "Edad máx. del FVG",       group = gS)
+confirmWin= input.int(3,      "Ventana de confirmación", group = gS)
+stopBuf   = input.float(0.10, "Buffer del stop x ATR",   step = 0.05, group = gS)
+warmupN   = input.int(12,     "Warmup de sesión",        group = gS)
+rrTarget  = input.float(1.6,  "Objetivo R (E2)",         step = 0.1,  group = gS)
+
+gM = "Momentum"
+useMomLong = input.bool(false, "Exigir momentum en LONG (F2)", group = gM)
+rsiLen     = input.int(14,     "RSI",                    group = gM)
+rsiLMin    = input.float(50,   "RSI long mín",           group = gM)
+rsiLMax    = input.float(68,   "RSI long máx",           group = gM)
+rsiSMin    = input.float(32,   "RSI short mín",          group = gM)
+rsiSMax    = input.float(48,   "RSI short máx",          group = gM)
+volLen     = input.int(20,     "Media de volumen",       group = gM)
+volMultL   = input.float(1.00, "Volumen x media (long)", step = 0.05, group = gM)
+volMultS   = input.float(1.20, "Volumen x media (short)",step = 0.05, group = gM)
+
+gD = "Dirección"
+allowLong  = input.bool(true,  "LONG",                   group = gD)
+allowShort = input.bool(true,  "SHORT (estricto)",       group = gD)
+shortRsi4h = input.float(45,   "RSI 4H máx. para SHORT", group = gD)
+
+gC = "Target clearance"
+useClear   = input.bool(true, "Exigir espacio hasta el objetivo", group = gC)
+pivotN     = input.int(2,     "Pivote 1H (n a cada lado)",       group = gC)
+clearLb    = input.int(48,    "Lookback de niveles",             group = gC)
+usePrevDay = input.bool(true, "Usar high/low del día previo",    group = gC)
+
+gL = "Límites operativos"
+maxPerDay  = input.int(1,   "Máx. trades por día", group = gL)
+maxHoldBar = input.int(288, "Time stop en velas de 5m (288 = 24 h)", group = gL)
+
+// ═════ FUNCIONES ═════════════════════════════════════════════════════════════
+f_macdHist(src, f, s, sig) =>
+    ln = ta.ema(src, f) - ta.ema(src, s)
+    ln - ta.ema(ln, sig)
+
+// ═════ INDICADORES CON PARIDAD PYTHON ════════════════════════════════════════
+atrPy      = ta.sma(ta.tr(true), atrLen)      // media simple de TR, no RMA
+volAvgPrev = ta.sma(volume, volLen)[1]        // excluye la vela actual
+
+utcDom      = dayofmonth(time, "UTC")
+newUtcDay   = na(utcDom[1]) or utcDom != utcDom[1]
+vwapSes     = ta.vwap(hlc3, newUtcDay)
+sessionBars = ta.barssince(newUtcDay) + 1
+warmupOk    = sessionBars > warmupN
+
+[c4, e4f, e4s, e4sPrev, rsi4] = request.security(syminfo.tickerid, "240",
+     [close[1], ta.ema(close, emaFast)[1], ta.ema(close, emaSlow)[1],
+      ta.ema(close, emaSlow)[1 + slopeLb], ta.rsi(close, rsiLen)[1]],
+     lookahead = barmerge.lookahead_off)
+
+[c1, e1f, e1s, mh1, mh1p] = request.security(syminfo.tickerid, "60",
+     [close[1], ta.ema(close, emaFast)[1], ta.ema(close, emaSlow)[1],
+      f_macdHist(close, 12, 26, 9)[1], f_macdHist(close, 12, 26, 9)[2]],
+     lookahead = barmerge.lookahead_off)
+
+ph1 = request.security(syminfo.tickerid, "60",
+     ta.pivothigh(high, pivotN, pivotN), lookahead = barmerge.lookahead_off)
+pl1 = request.security(syminfo.tickerid, "60",
+     ta.pivotlow(low, pivotN, pivotN), lookahead = barmerge.lookahead_off)
+
+// ═════ RÉGIMEN ═══════════════════════════════════════════════════════════════
+regimeLong  = allowLong and c4 > e4f and e4f > e4s and e4s > e4sPrev
+regimeShort = allowShort and c4 < e4f and e4f < e4s and e4s < e4sPrev and not na(rsi4) and rsi4 <= shortRsi4h
+alignLong   = c1 > e1f and e1f > e1s
+alignShort  = c1 < e1f and e1f < e1s and mh1 < 0 and mh1 < mh1p
+longCtx     = regimeLong and alignLong
+shortCtx    = regimeShort and alignShort
+
+// ═════ MOMENTUM ══════════════════════════════════════════════════════════════
+rsi5     = ta.rsi(close, rsiLen)
+mh5      = f_macdHist(close, 12, 26, 9)
+vwapUp   = vwapSes > vwapSes[1]
+vwapDown = vwapSes < vwapSes[1]
+momLongOk  = rsi5 >= rsiLMin and rsi5 <= rsiLMax and rsi5 > rsi5[1] and mh5 > mh5[1] and mh5[1] > mh5[2] and volume >= volMultL * volAvgPrev and vwapUp
+momShortOk = rsi5 >= rsiSMin and rsi5 <= rsiSMax and rsi5 < rsi5[1] and mh5 < mh5[1] and mh5[1] < mh5[2] and volume >= volMultS * volAvgPrev and vwapDown
+
+// ═════ CICLO DE VIDA DEL FVG ═════════════════════════════════════════════════
+var float gLo = na
+var float gHi = na
+var int   gDir = 0
+var int   gBar = na
+var bool  gTouch = false
+var int   gTouchBar = na
+var bool  gDead = false
+
+if newUtcDay
+    gLo := na
+    gHi := na
+    gDir := 0
+    gDead := false
+    gTouch := false
+
+bullGap = low > high[2]
+bearGap = high < low[2]
+
+if barstate.isconfirmed and warmupOk and na(gLo) and not gDead
+    if bullGap and longCtx
+        gLo := high[2]
+        gHi := low
+        gDir := 1
+        gBar := bar_index
+        gTouch := false
+    else if bearGap and shortCtx
+        gLo := high
+        gHi := low[2]
+        gDir := -1
+        gBar := bar_index
+        gTouch := false
+
+invalidated  = not na(gLo) and ((gDir == 1 and close < gLo) or (gDir == -1 and close > gHi))
+bandUp       = vwapSes + bandAtr * atrPy
+bandDn       = vwapSes - bandAtr * atrPy
+overlapsBand = not na(gLo) and gLo <= bandUp and gHi >= bandDn
+touching     = not na(gLo) and ((gDir == 1 and low <= gHi) or (gDir == -1 and high >= gLo))
+
+if barstate.isconfirmed and not na(gLo) and not gDead
+    if invalidated
+        gDead := true
+    else if not gTouch and touching
+        if (bar_index - gBar) > gapMaxAge or not overlapsBand
+            gDead := true
+        else
+            gTouch := true
+            gTouchBar := bar_index
+    else if gTouch and (bar_index - gTouchBar) > confirmWin - 1
+        gDead := true
+
+inWindow  = gTouch and not gDead and (bar_index - gTouchBar) <= confirmWin - 1
+confLong  = inWindow and gDir == 1 and longCtx and close > math.max(gHi, vwapSes) and close > high[1] and close > open and (not useMomLong or momLongOk)
+confShort = inWindow and gDir == -1 and shortCtx and close < math.min(gLo, vwapSes) and close < low[1] and close < open and momShortOk
+
+// ═════ NIVELES ═══════════════════════════════════════════════════════════════
+segLen    = gTouch ? math.max(1, bar_index - gTouchBar + 1) : 1
+segLow    = ta.lowest(low, segLen)
+segHigh   = ta.highest(high, segLen)
+stopLong  = math.min(nz(segLow, gLo), gLo) - stopBuf * atrPy
+stopShort = math.max(nz(segHigh, gHi), gHi) + stopBuf * atrPy
+entryPx   = close
+rLong     = entryPx - stopLong
+rShort    = stopShort - entryPx
+
+// ═════ TARGET CLEARANCE ══════════════════════════════════════════════════════
+var array<float> swHi = array.new_float()
+var array<float> swLo = array.new_float()
+if barstate.isconfirmed and not na(ph1)
+    array.push(swHi, ph1)
+    if array.size(swHi) > clearLb
+        array.shift(swHi)
+if barstate.isconfirmed and not na(pl1)
+    array.push(swLo, pl1)
+    if array.size(swLo) > clearLb
+        array.shift(swLo)
+
+var float pdHigh = na
+var float pdLow = na
+var float curHigh = na
+var float curLow = na
+if newUtcDay
+    pdHigh := curHigh
+    pdLow := curLow
+    curHigh := high
+    curLow := low
+else
+    curHigh := math.max(nz(curHigh, high), high)
+    curLow := math.min(nz(curLow, low), low)
+
+f_nearestAbove(arr, px) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            v = array.get(arr, i)
+            if not na(v) and v > px and (na(best) or v < best)
+                best := v
+    best
+
+f_nearestBelow(arr, px) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            v = array.get(arr, i)
+            if not na(v) and v < px and (na(best) or v > best)
+                best := v
+    best
+
+bL  = f_nearestAbove(swHi, entryPx)
+bS  = f_nearestBelow(swLo, entryPx)
+bLF = usePrevDay and not na(pdHigh) and pdHigh > entryPx ? (na(bL) ? pdHigh : math.min(bL, pdHigh)) : bL
+bSF = usePrevDay and not na(pdLow) and pdLow < entryPx ? (na(bS) ? pdLow : math.max(bS, pdLow)) : bS
+
+clearLongR   = na(bLF) or rLong <= 0 ? 999.0 : (bLF - entryPx) / rLong
+clearShortR  = na(bSF) or rShort <= 0 ? 999.0 : (entryPx - bSF) / rShort
+clearDataOk  = not useClear or (array.size(swHi) + array.size(swLo) > 0)
+clearLongOk  = not useClear or (clearDataOk and clearLongR >= rrTarget)
+clearShortOk = not useClear or (clearDataOk and clearShortR >= rrTarget)
+
+// ═════ LÍMITE DIARIO ═════════════════════════════════════════════════════════
+var int tradesToday = 0
+if newUtcDay
+    tradesToday := 0
+
+// ═════ SEÑAL ═════════════════════════════════════════════════════════════════
+sigLong  = confLong  and rLong  > 0 and clearLongOk
+sigShort = confShort and rShort > 0 and clearShortOk
+
+canOpen = strategy.position_size == 0 and tradesToday < maxPerDay
+
+// Niveles CONGELADOS al abrir. Recalcularlos cada barra movería el stop, que es
+// exactamente lo que la especificación prohíbe (PRD 8).
+var float posStop = na
+var float posTp   = na
+var int   posBar  = na
+
+if sigLong and canOpen
+    posStop := stopLong
+    posTp   := entryPx + rrTarget * rLong
+    posBar  := bar_index
+    tradesToday += 1
+    strategy.entry("L", strategy.long)
+
+if sigShort and canOpen
+    posStop := stopShort
+    posTp   := entryPx - rrTarget * rShort
+    posBar  := bar_index
+    tradesToday += 1
+    strategy.entry("S", strategy.short)
+
+// El gap se consume al confirmar: primer retest ÚNICO.
+if barstate.isconfirmed and (sigLong or sigShort)
+    gDead := true
+
+// ═════ SALIDAS: SL / TP / TIME STOP ══════════════════════════════════════════
+if strategy.position_size > 0
+    strategy.exit("L-x", from_entry = "L", stop = posStop, limit = posTp)
+if strategy.position_size < 0
+    strategy.exit("S-x", from_entry = "S", stop = posStop, limit = posTp)
+
+// Time stop a 24 h. Tercera vía de salida, no opcional (PRD 11).
+if strategy.position_size != 0 and not na(posBar) and (bar_index - posBar) >= maxHoldBar
+    strategy.close_all(comment = "time stop 24h")
+
+// ═════ DIBUJO MÍNIMO ═════════════════════════════════════════════════════════
+plot(vwapSes, "VWAP sesión", color.new(color.orange, 0), 2)
+plot(bandUp, "VWAP + kATR", color.new(color.orange, 75), 1)
+plot(bandDn, "VWAP - kATR", color.new(color.orange, 75), 1)
+plot(e4f, "EMA20 4H", color.new(color.blue, 40), 2)
+plot(e4s, "EMA50 4H", color.new(color.navy, 40), 2)
+
+plotshape(sigLong and canOpen, "LONG", shape.labelup, location.belowbar,
+          color.new(color.teal, 0), text = "L", textcolor = color.white, size = size.tiny)
+plotshape(sigShort and canOpen, "SHORT", shape.labeldown, location.abovebar,
+          color.new(color.red, 0), text = "S", textcolor = color.white, size = size.tiny)
+
+// Señales que el LÍMITE DIARIO bloqueó. Se pintan aparte a propósito: son
+// exactamente el dato que responde si "el primer A+ del día" era el bueno
+// (AUDIT C-14), y en el Strategy Tester no aparecen por ningún lado.
+plotshape(sigLong and not canOpen, "LONG bloqueado", shape.xcross, location.belowbar,
+          color.new(color.gray, 30), size = size.tiny)
+plotshape(sigShort and not canOpen, "SHORT bloqueado", shape.xcross, location.abovebar,
+          color.new(color.gray, 30), size = size.tiny)
