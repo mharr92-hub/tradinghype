@@ -36,3 +36,6 @@ out/
 Thumbs.db
 .vscode/
 .idea/
+
+# Journal del forward logger — datos de runtime, no van al repo
+journal/

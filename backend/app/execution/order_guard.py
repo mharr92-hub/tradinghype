@@ -26,7 +26,7 @@ from ..core.config import Settings
 from ..risk.limits import (KILL_SIGNAL_EXPIRED, DayState, Gate, can_open_new_trade,
                            mark_critical)
 from ..risk.sizing import Sizing
-from ..strategies.hype.common import SIDE_LONG, Config
+from ..strategies.hype.common import SIDE_LONG, SIDE_SHORT, Config
 from ..strategies.hype.engine import Signal
 
 
@@ -40,10 +40,20 @@ class CriticalExecutionError(RuntimeError):
 
 @dataclass(frozen=True)
 class OpenOrder:
+    """Una orden tal y como la reporta el EXCHANGE, no como creemos que la
+    enviamos. La diferencia es todo el propósito de este modulo."""
     order_id: str
     kind: str            # "stop" | "take_profit" | "entry" | "unknown"
     trigger_price: float
     size: float
+    coin: str = ""       # instrumento; un SL sobre otro activo no protege nada
+    side: str = ""       # lado de la ORDEN, opuesto al de la posicion
+    reduce_only: bool = False
+
+
+def _closing_side(position_side: str) -> str:
+    """Lado que debe tener una orden que CIERRA la posicion."""
+    return SIDE_SHORT if position_side == SIDE_LONG else SIDE_LONG
 
 
 def assert_can_send_orders(settings: Settings) -> None:
@@ -120,14 +130,46 @@ def revalidate(signal: Signal, sizing: Sizing, day: DayState, cfg: Config,
     return Gate(True)
 
 
+def _matches(o: OpenOrder, *, price: float, coin: str, position_side: str,
+             qty: float, tol: float, qty_tol: float) -> Optional[str]:
+    """¿Esta orden protege REALMENTE esta posicion? Devuelve el motivo del
+    fallo, o None si todo cuadra.
+
+    Comprobar solo el precio no basta, y la diferencia importa: una orden con
+    el precio correcto pero la mitad del tamaño deja media posicion desnuda; con
+    el lado equivocado DUPLICA la posicion en vez de cerrarla; sobre otro
+    instrumento no protege nada; y sin reduce_only puede abrir una posicion
+    contraria si la original ya se cerro por otra via.
+    """
+    if abs(o.trigger_price - price) > tol:
+        return f"precio {o.trigger_price} != esperado {price}"
+    if coin and o.coin and o.coin != coin:
+        return f"instrumento {o.coin!r} != esperado {coin!r}"
+    expected_side = _closing_side(position_side)
+    if o.side and o.side != expected_side:
+        return f"lado {o.side!r} no cierra una posicion {position_side!r}"
+    if qty > 0 and abs(o.size - qty) > qty_tol:
+        return f"tamaño {o.size} != posicion {qty}"
+    if not o.reduce_only:
+        return "no es reduce_only: podria abrir posicion en vez de cerrarla"
+    return None
+
+
 def verify_protection(orders: Sequence[OpenOrder], expected_stop: float,
                       expected_tp: float, day: DayState,
-                      tolerance: float = 1e-6) -> None:
-    """Confirma contra el exchange que SL y TP existen tras el fill.
+                      *, coin: str = "", position_side: str = SIDE_LONG,
+                      qty: float = 0.0, tolerance: float = 1e-6,
+                      qty_tolerance: float = 1e-9) -> None:
+    """Confirma contra el exchange que la posicion esta REALMENTE protegida.
 
-    Un SL ausente no es un aviso: es CRITICAL y bloquea nuevas operaciones
-    hasta que un humano mire la cuenta. La posicion queda desprotegida y eso
-    manda sobre cualquier otra consideracion.
+    No se comprueba que "haya un stop": se comprueba que haya un stop al precio
+    estructural, sobre este instrumento, en el lado que cierra, por el tamaño
+    completo de la posicion y con reduce_only. Cualquier desviacion deja la
+    posicion parcial o totalmente desnuda, que a efectos practicos es igual de
+    grave que no tener stop.
+
+    Un SL que no cuadra no es un aviso: es CRITICAL y bloquea nuevas
+    operaciones hasta que un humano mire la cuenta.
     """
     stops = [o for o in orders if o.kind == "stop"]
     tps = [o for o in orders if o.kind == "take_profit"]
@@ -138,16 +180,32 @@ def verify_protection(orders: Sequence[OpenOrder], expected_stop: float,
             "CRITICAL EXECUTION ERROR: no hay stop protector en el exchange "
             "despues del fill. Posicion desprotegida."
         )
-    if not any(abs(o.trigger_price - expected_stop) <= tolerance for o in stops):
-        mark_critical(day, "protective_sl_wrong_price")
+
+    stop_reasons = [_matches(o, price=expected_stop, coin=coin,
+                             position_side=position_side, qty=qty,
+                             tol=tolerance, qty_tol=qty_tolerance)
+                    for o in stops]
+    if all(r is not None for r in stop_reasons):
+        mark_critical(day, "protective_sl_mismatch")
         raise CriticalExecutionError(
-            f"CRITICAL EXECUTION ERROR: stop en el exchange no coincide con el "
-            f"stop estructural esperado ({expected_stop})."
+            "CRITICAL EXECUTION ERROR: ningun stop del exchange protege esta "
+            f"posicion. Motivos: {'; '.join(r for r in stop_reasons if r)}"
         )
+
+    # El TP ausente o incorrecto NO es critico: la posicion sigue protegida a
+    # la baja y el time stop de 24 h sigue vigente. Se reporta para reintentar,
+    # porque un TP mal colocado tampoco se puede dejar ahi.
     if not tps:
-        # El TP ausente NO es critico: la posicion sigue protegida a la baja y
-        # el time stop de 24 h sigue vigente. Se reporta para reintentar.
         raise RuntimeError("take_profit_missing: reintentar colocacion del TP.")
+    tp_reasons = [_matches(o, price=expected_tp, coin=coin,
+                           position_side=position_side, qty=qty,
+                           tol=tolerance, qty_tol=qty_tolerance)
+                  for o in tps]
+    if all(r is not None for r in tp_reasons):
+        raise RuntimeError(
+            "take_profit_mismatch: ningun TP cuadra con la posicion. "
+            f"Motivos: {'; '.join(r for r in tp_reasons if r)}"
+        )
 
 
 def unknown_orders(orders: Sequence[OpenOrder]) -> list:

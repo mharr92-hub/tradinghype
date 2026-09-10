@@ -100,7 +100,17 @@ class Config:
     clearance_use_prev_day: bool = True
 
     # --- costos (PRD 12) ---
-    fee_taker: float = 0.00045          # 4.5 bps/lado — CONFIRMAR el tier real
+    # SUPUESTO NO CONFIRMADO. 4.5 bps/lado es una estimacion, no el tier real de
+    # la cuenta de Mark. Decision de Mark (2026-09-09): usarlo provisionalmente,
+    # marcado como supuesto, hasta poder consultar la cuenta.
+    #
+    # `fee_taker_confirmed` acompaña a cada señal en el journal y en la Signal
+    # Card. Va como DATO y no como comentario a proposito: un comentario no
+    # llega al analisis posterior, y dentro de tres meses nadie sabra si aquel
+    # Cost_R se calculo con el fee real o con este supuesto. Todo resultado
+    # producido con False queda marcado como provisional.
+    fee_taker: float = 0.00045
+    fee_taker_confirmed: bool = False
     spread_rt: float = 0.0002
     slippage_rt: float = 0.0002
     max_cost_r_long: float = 0.15       # [PROD] parametro de investigacion, no dogma
