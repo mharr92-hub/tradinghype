@@ -59,7 +59,16 @@ pivotN     = input.int(2,     "Pivote 1H (n a cada lado)",       group = gC)
 clearLb    = input.int(48,    "Lookback de niveles",             group = gC)
 usePrevDay = input.bool(true, "Usar high/low del día previo",    group = gC)
 
+gK = "Costos (el gate que más rechaza — ver FINDING_001)"
+feeTaker  = input.float(0.045, "Fee taker % por lado", step = 0.005, group = gK,
+     tooltip = "SUPUESTO, no el tier real de la cuenta. El gate depende linealmente de esto.")
+spreadRt  = input.float(0.02,  "Spread % ida+vuelta",  step = 0.01, group = gK)
+slipRt    = input.float(0.02,  "Slippage % ida+vuelta",step = 0.01, group = gK)
+maxCostRL = input.float(0.15,  "Cost_R máx. LONG",     step = 0.01, group = gK)
+maxCostRS = input.float(0.12,  "Cost_R máx. SHORT",    step = 0.01, group = gK)
+
 gV = "Visual"
+showRejects = input.bool(true, "Marcar setups RECHAZADOS y por qué", group = "Visual")
 showBoxes = input.bool(true, "Cajas de FVG",      group = gV)
 showRs    = input.bool(true, "Líneas 1R/1.6R/2R", group = gV)
 showTable = input.bool(true, "Panel de estado",   group = gV)
@@ -291,10 +300,39 @@ clearDataOk  = not useClear or (array.size(swHi) + array.size(swLo) > 0)
 clearLongOk  = not useClear or (clearDataOk and clearLongR >= rrTarget)
 clearShortOk = not useClear or (clearDataOk and clearShortR >= rrTarget)
 
+// ═════ COST GATE ═════════════════════════════════════════════════════════════
+// Estaba AUSENTE en la v1 del indicador: el backend rechazaba por costos y el
+// gráfico pintaba la señal igual. Es el gate que más rechaza — sin el de
+// clearance, mata 9 de cada 10 (FINDING_001) — así que su ausencia hacía que
+// el indicador enseñara una estrategia bastante más generosa que la real.
+costFrac  = (2.0 * feeTaker + spreadRt + slipRt) / 100.0
+costRLong  = rLong  > 0 ? costFrac / (rLong  / entryPx) : 999.0
+costRShort = rShort > 0 ? costFrac / (rShort / entryPx) : 999.0
+costLongOk  = costRLong  <= maxCostRL
+costShortOk = costRShort <= maxCostRS
+
 // ═════ SEÑAL ═════════════════════════════════════════════════════════════════
 tfOk = timeframe.period == "5"
-sigLong  = tfOk and confLong  and rLong  > 0 and clearLongOk  and barstate.isconfirmed
-sigShort = tfOk and confShort and rShort > 0 and clearShortOk and barstate.isconfirmed
+sigLong  = tfOk and confLong  and rLong  > 0 and clearLongOk  and costLongOk  and barstate.isconfirmed
+sigShort = tfOk and confShort and rShort > 0 and clearShortOk and costShortOk and barstate.isconfirmed
+
+// Setups que CONFIRMARON pero murieron en un gate económico. Se pintan aparte
+// porque son la mayor parte de lo que hay que mirar: en 17 días fueron 10 de
+// 10. Sin esto el gráfico parece vacío y no se ve dónde está el problema.
+rejLong  = tfOk and confLong  and rLong  > 0 and barstate.isconfirmed and (not clearLongOk  or not costLongOk)
+rejShort = tfOk and confShort and rShort > 0 and barstate.isconfirmed and (not clearShortOk or not costShortOk)
+
+rejLongTxt  = not clearLongOk  ? "clear " + str.tostring(math.min(clearLongR, 99), "#.##")  + "R" : "cost " + str.tostring(costRLong, "#.##")  + "R"
+rejShortTxt = not clearShortOk ? "clear " + str.tostring(math.min(clearShortR, 99), "#.##") + "R" : "cost " + str.tostring(costRShort, "#.##") + "R"
+
+if showRejects and rejLong
+    label.new(bar_index, low, rejLongTxt, style = label.style_label_up,
+              size = size.tiny, color = color.new(color.gray, 20),
+              textcolor = color.white)
+if showRejects and rejShort
+    label.new(bar_index, high, rejShortTxt, style = label.style_label_down,
+              size = size.tiny, color = color.new(color.gray, 20),
+              textcolor = color.white)
 
 // El gap se consume al confirmar: primer retest ÚNICO.
 if barstate.isconfirmed and (sigLong or sigShort)
@@ -337,7 +375,7 @@ if showRs and (sigLong or sigShort)
 
 // ═════ PANEL DE ESTADO ═══════════════════════════════════════════════════════
 // Muestra QUÉ está esperando el sistema, no solo que no hay señal.
-var table t = table.new(position.top_right, 2, 12, border_width = 1,
+var table t = table.new(position.top_right, 2, 13, border_width = 1,
                         frame_width = 1, frame_color = color.new(color.gray, 60))
 
 if showTable and barstate.islast
@@ -362,8 +400,10 @@ if showTable and barstate.islast
     table.cell(t, 1, 5, gTouch and not gDead ? "SI" : "-", text_color = gTouch and not gDead ? color.yellow : color.gray, text_size = size.tiny)
     table.cell(t, 0, 6, "RSI/MACD/Vol", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 6, f_mark(rsi5 >= rsiLMin and rsi5 <= rsiLMax) + " " + f_mark(mh5 > mh5[1]) + " " + f_mark(volume >= volAvgPrev), text_color = color.gray, text_size = size.tiny)
-    table.cell(t, 0, 7, "Clearance L/S", text_color = color.gray, text_size = size.tiny)
-    table.cell(t, 1, 7, str.tostring(math.min(clearLongR, 99), "#.#") + " / " + str.tostring(math.min(clearShortR, 99), "#.#"), text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 0, 7, "Cost_R L/S", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 7, str.tostring(math.min(costRLong, 9), "#.##") + " / " + str.tostring(math.min(costRShort, 9), "#.##"), text_color = costLongOk ? color.teal : color.red, text_size = size.tiny)
+    table.cell(t, 0, 12, "Clearance L/S", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 12, str.tostring(math.min(clearLongR, 99), "#.#") + " / " + str.tostring(math.min(clearShortR, 99), "#.#"), text_color = color.gray, text_size = size.tiny)
     table.cell(t, 0, 8, "Sesion", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 8, str.tostring(sessionBars) + (warmupOk ? "" : " warmup"), text_color = warmupOk ? color.gray : color.orange, text_size = size.tiny)
     table.cell(t, 0, 9, "Estado", text_color = color.gray, text_size = size.tiny)
