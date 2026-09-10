@@ -32,6 +32,9 @@ class VenueSpec:
     tick_size: float = 0.001
     available_collateral_usd: float = 0.0
     max_leverage: float = 3.0
+    # En RESEARCH/PAPER no hay cuenta y el colateral no aplica. En TINY/LIVE si,
+    # y entonces un colateral desconocido debe BLOQUEAR, no aprobar por defecto.
+    requires_collateral_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,8 +72,21 @@ def size_position(entry: float, stop: float, side: str, cfg: Config,
     from ..strategies.hype.common import cost_fraction
     cfrac = cost_fraction(cfg, side) if cost_frac is None else cost_frac
 
+    # Validacion de coherencia ANTES de calcular nada. `abs(entry - stop)`
+    # aceptaba tan campante un LONG con el stop POR ENCIMA de la entrada: el
+    # valor absoluto borra el error y produce una cantidad perfectamente
+    # razonable para una posicion que nace ya perdida.
+    if not all(math.isfinite(x) for x in (entry, stop, equity)):
+        return Sizing(False, 0.0, 0.0, 0.0, 0.0, "non_finite_input")
+    if entry <= 0:
+        return Sizing(False, 0.0, 0.0, 0.0, 0.0, "bad_entry")
+    if side == SIDE_LONG and stop >= entry:
+        return Sizing(False, 0.0, 0.0, 0.0, 0.0, "stop_above_entry_on_long")
+    if side != SIDE_LONG and stop <= entry:
+        return Sizing(False, 0.0, 0.0, 0.0, 0.0, "stop_below_entry_on_short")
+
     risk_per_unit = abs(entry - stop)
-    if risk_per_unit <= 0 or entry <= 0:
+    if risk_per_unit <= 0:
         return Sizing(False, 0.0, 0.0, 0.0, 0.0, "bad_levels")
 
     budget = risk_budget(cfg, equity)
@@ -99,8 +115,24 @@ def size_position(entry: float, stop: float, side: str, cfg: Config,
                       "below_min_notional_would_require_more_risk")
     if notional > venue.max_notional_usd:
         return Sizing(False, qty, notional, planned_risk, budget, "above_max_notional")
-    if venue.available_collateral_usd > 0:
+
+    # El tick size existia como campo decorativo. Un entry que no cae en un
+    # tick valido no es el precio al que se va a operar, asi que el riesgo
+    # calculado tampoco es el real.
+    if venue.tick_size > 0:
+        rem = abs(entry / venue.tick_size - round(entry / venue.tick_size))
+        if rem > 1e-6:
+            return Sizing(False, qty, notional, planned_risk, budget,
+                          f"entry_off_tick:{venue.tick_size}")
+
+    # Colateral: se comprueba SIEMPRE que el modo requiera margen real. Antes
+    # se saltaba con `if collateral > 0`, es decir, se omitia la validacion
+    # justo en el caso peor — cuenta a cero — y devolvia ok.
+    if venue.requires_collateral_check:
         needed = notional / max(venue.max_leverage, 1e-9)
+        if venue.available_collateral_usd <= 0:
+            return Sizing(False, qty, notional, planned_risk, budget,
+                          "collateral_unknown_or_zero")
         if needed > venue.available_collateral_usd:
             return Sizing(False, qty, notional, planned_risk, budget,
                           "insufficient_collateral")

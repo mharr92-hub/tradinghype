@@ -19,6 +19,7 @@ cualquier intento de enviar una orden real lanza excepcion en vez de operar.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -113,6 +114,19 @@ def revalidate(signal: Signal, sizing: Sizing, day: DayState, cfg: Config,
     if age < 0:
         return Gate(False, "signal_from_the_future")
 
+    if not math.isfinite(current_price) or current_price <= 0:
+        return Gate(False, "current_price_invalid")
+
+    # El setup puede estar MUERTO aunque el drift adverso sea cero. `drift_r`
+    # solo mide el movimiento en contra del FILL: para un LONG, un precio mas
+    # bajo abarata la entrada y da drift 0. Pero si ese precio ya esta en el
+    # stop o por debajo, la invalidacion estructural ya ocurrio y lo que se
+    # aprobaria es una entrada nacida perdida. Se comprueba antes que el drift.
+    through_stop = (current_price <= signal.stop if signal.side == SIDE_LONG
+                    else current_price >= signal.stop)
+    if through_stop:
+        return Gate(False, f"price_through_stop:{current_price}")
+
     d = drift_r(signal, current_price)
     if d > cfg.max_drift_r:
         # No se persigue la entrada (PRD 13).
@@ -141,12 +155,24 @@ def _matches(o: OpenOrder, *, price: float, coin: str, position_side: str,
     instrumento no protege nada; y sin reduce_only puede abrir una posicion
     contraria si la original ya se cerro por otra via.
     """
+    # Un campo VACIO no es un campo que cuadre. Antes, `if coin and o.coin`
+    # dejaba pasar una orden que no dijera sobre que instrumento es, y un
+    # trigger NaN pasaba el chequeo de precio porque `abs(nan - x) > tol` es
+    # False. Lo desconocido se rechaza: es el unico default seguro cuando lo
+    # que esta en juego es si la posicion tiene stop.
+    if not math.isfinite(o.trigger_price) or not math.isfinite(o.size):
+        return f"orden con valores no finitos (trigger={o.trigger_price}, size={o.size})"
     if abs(o.trigger_price - price) > tol:
         return f"precio {o.trigger_price} != esperado {price}"
-    if coin and o.coin and o.coin != coin:
-        return f"instrumento {o.coin!r} != esperado {coin!r}"
+    if coin:
+        if not o.coin:
+            return "el exchange no reporta instrumento: no se puede verificar"
+        if o.coin != coin:
+            return f"instrumento {o.coin!r} != esperado {coin!r}"
     expected_side = _closing_side(position_side)
-    if o.side and o.side != expected_side:
+    if not o.side:
+        return "el exchange no reporta lado: no se puede verificar"
+    if o.side != expected_side:
         return f"lado {o.side!r} no cierra una posicion {position_side!r}"
     if qty > 0 and abs(o.size - qty) > qty_tol:
         return f"tamaño {o.size} != posicion {qty}"

@@ -141,7 +141,11 @@ def coverage_ok(c1h: Sequence[Candle], c5: Sequence[Candle], t: int,
 
     Fail-closed: sin cobertura, el trade se rechaza.
     """
-    min_1h = max(2 * cfg.clearance_pivot_n + 1, cfg.clearance_pivot_n + 1)
+    # El lookback DECLARADO es la promesa que hace el gate: "he mirado 48 velas
+    # de 1H". Aceptar 5 rompia esa promesa en silencio — el nivel bloqueante
+    # podia estar justo en las 43 que no se miraron, y el gate aprobaba igual.
+    # Se exige el lookback completo, o se admite que no se puede evaluar.
+    min_1h = cfg.clearance_lookback_1h
     if len(c1h) < min_1h:
         return False, f"insufficient_1h_history:{len(c1h)}<{min_1h}"
 
@@ -149,10 +153,12 @@ def coverage_ok(c1h: Sequence[Candle], c5: Sequence[Candle], t: int,
         cur_start = session_start_ms(c5[t].ts, cfg.session_utc_hour)
         prev_start = cur_start - DAY_MS
         n_prev = sum(1 for cd in c5 if prev_start <= cd.ts < cur_start)
-        # Una sesion completa son 288 velas de 5m. Se exige el 80 %: por debajo
-        # de eso el high/low de la sesion anterior puede estar simplemente
-        # ausente de los datos, no ausente del mercado.
-        need = int(0.8 * (DAY_MS // (5 * 60 * 1000)))
+        # Una sesion completa son 288 velas de 5m. Se exige practicamente toda
+        # (98 %): el high del dia previo es UN punto, y basta con que falte la
+        # vela que lo contenia para que el gate apruebe un trade que deberia
+        # bloquear. Tolerar un 20 % de ausencias era tolerar justo eso.
+        total = DAY_MS // (5 * 60 * 1000)
+        need = int(0.98 * total)
         if n_prev < need:
             return False, f"insufficient_prev_session:{n_prev}<{need}"
 

@@ -19,6 +19,7 @@ la descarta SIEMPRE y no hay opcion para incluirla.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -113,11 +114,21 @@ class HyperliquidData:
         return data
 
     @staticmethod
-    def _to_candle(raw: dict) -> Candle:
-        # Hyperliquid devuelve los numeros como STRING. Convertirlos con float()
-        # y no con int() para el volumen: 'v' puede traer decimales.
-        return Candle(ts=int(raw["t"]), o=float(raw["o"]), h=float(raw["h"]),
-                      l=float(raw["l"]), c=float(raw["c"]), v=float(raw["v"]))
+    def _num(raw: dict, key: str) -> float:
+        """float() acepta 'NaN' e 'Infinity' sin protestar, y a partir de ahi
+        toda comparacion con ese valor devuelve False en silencio: un stop no
+        se dispara, un gate no rechaza, un dato viejo parece fresco. Se corta
+        aqui, en la frontera, que es el unico sitio donde se puede."""
+        v = float(raw[key])
+        if not math.isfinite(v):
+            raise MarketDataError(f"valor no finito en {key!r}: {raw[key]!r}")
+        return v
+
+    @classmethod
+    def _to_candle(cls, raw: dict) -> Candle:
+        # Hyperliquid devuelve los numeros como STRING.
+        return Candle(ts=int(raw["t"]), o=cls._num(raw, "o"), h=cls._num(raw, "h"),
+                      l=cls._num(raw, "l"), c=cls._num(raw, "c"), v=cls._num(raw, "v"))
 
     def closed_candles(self, interval: str, lookback_bars: int,
                        now_ms: Optional[int] = None) -> List[Candle]:
@@ -158,11 +169,19 @@ class HyperliquidData:
         vela, y en cuanto hay un hueco el 4H sale mal sin avisar. El venue ya
         sabe agregar sus propias velas.
 
+        UN SOLO RELOJ para los tres marcos. Si cada consulta capturara su
+        propio `time.time()`, una peticion a las 03:59:59.9 y otra a las
+        04:00:00.1 mezclarian un cierre de 5m de las 03:55 con un cierre de 1H
+        de las 04:00, y el motor decidiria sobre una vela de 5m ANTERIOR usando
+        contexto HTF POSTERIOR. Es lookahead, y del sutil: solo aparece en el
+        cambio de hora y desaparece al reintentar.
+
         Devuelve (c4h, c1h, c5) en el orden que espera scan().
         """
-        c5 = self.closed_candles("5m", bars_5m, now_ms)
-        c1h = self.closed_candles("1h", bars_1h, now_ms)
-        c4h = self.closed_candles("4h", bars_4h, now_ms)
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        c5 = self.closed_candles("5m", bars_5m, now)
+        c1h = self.closed_candles("1h", bars_1h, now)
+        c4h = self.closed_candles("4h", bars_4h, now)
         return c4h, c1h, c5
 
     # -- frescura -----------------------------------------------------------

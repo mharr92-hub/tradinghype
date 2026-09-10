@@ -34,6 +34,7 @@ from typing import Callable, Dict, List, Optional
 
 from ..adapters.hyperliquid_data import (HyperliquidData, MarketDataError,
                                          StaleDataError)
+from ..execution.order_guard import signal_age_seconds
 from ..risk.limits import DayState, can_open_new_trade, record_blocked_a_plus
 from ..risk.sizing import VenueSpec, expected_profit_usd, size_position
 from ..strategies.hype import engine
@@ -94,6 +95,7 @@ class ScanRecord:
     execution_block_reason: Optional[str] = None
     blocked_by_daily_limit: bool = False
 
+    signal_age_seconds: Optional[float] = None
     checks: Dict[str, object] = field(default_factory=dict)
     checklist: List[str] = field(default_factory=list)
     data_age_seconds: Optional[float] = None
@@ -219,9 +221,23 @@ class Scanner:
                 expected_profit_usd(s.entry_ref, s.tp, z.qty, s.side, s.cost_frac)
                 if z.ok else None
             )
-            rec.executable = bool(gate) and z.ok
-            rec.execution_block_reason = None if rec.executable else (
-                gate.reason if not gate else f"sizing:{z.reason}")
+            # Frescura del FEED y vigencia de la SEÑAL son cosas distintas.
+            # `assert_fresh` mira si el mercado nos llega; el TTL mira si esta
+            # señal concreta sigue viva. Una señal de hace 91 s sobre un feed
+            # perfectamente fresco NO es ejecutable (PRD 13).
+            age_sig = signal_age_seconds(s, now)
+            rec.signal_age_seconds = age_sig
+            ttl_ok = 0 <= age_sig <= cfg.signal_ttl_seconds
+
+            rec.executable = bool(gate) and z.ok and ttl_ok
+            if rec.executable:
+                rec.execution_block_reason = None
+            elif not ttl_ok:
+                rec.execution_block_reason = f"signal_expired:{age_sig:.0f}s"
+            elif not gate:
+                rec.execution_block_reason = gate.reason
+            else:
+                rec.execution_block_reason = f"sizing:{z.reason}"
             rec.checklist = list(s.checklist)
 
             # A+ REAL: reglas completas + gates operativos verdes (PRD 14).
@@ -241,6 +257,30 @@ class Scanner:
 
         self.logger.write(rec)
         return rec
+
+    # -- fallos ---------------------------------------------------------------
+
+    def _log_failure(self, now_ms: int, kind: str, detail: str) -> None:
+        """Un fallo de datos tambien es una observacion, y se escribe al journal.
+
+        Antes solo se imprimia por consola. El efecto era que el historial
+        omitia EXACTAMENTE los intervalos en que el sistema no pudo evaluar el
+        mercado, y un journal con huecos invisibles se lee como un journal
+        completo: al analizarlo, esos minutos parecerian "no hubo señal" en vez
+        de "no se supo". Con el forward log alimentando la decision de promover
+        a dinero real, esa diferencia importa.
+        """
+        rec = ScanRecord(
+            schema=SCHEMA_VERSION, ts_scan_ms=now_ms, ts_bar_ms=0,
+            mode=self.mode, reason=f"{kind}:{detail}", state="NO_SETUP",
+            has_signal=False, executable=False,
+            execution_block_reason=kind,
+        )
+        try:
+            self.logger.write(rec)
+        except Exception as e:                      # nunca matar el bucle
+            print(f"[scanner] no se pudo escribir el fallo al journal: {e}")
+        print(f"[scanner] {kind} ({self._api_errors}): {detail}")
 
     # -- bucle ---------------------------------------------------------------
 
@@ -272,10 +312,10 @@ class Scanner:
                     on_record(rec)
             except StaleDataError as e:
                 self._api_errors += 1
-                print(f"[scanner] datos viejos, no se opera: {e}")
+                self._log_failure(now, "stale_data", str(e))
             except MarketDataError as e:
                 self._api_errors += 1
-                print(f"[scanner] error de datos ({self._api_errors}): {e}")
+                self._log_failure(now, "market_data_error", str(e))
             n += 1
             if iterations is not None and n >= iterations:
                 break

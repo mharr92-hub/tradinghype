@@ -1,6 +1,6 @@
 # Review 003 — pruebas independientes antes de PAPER end-to-end
 
-2026-09-09. Revisor: Codex. Base inspeccionada: `f8b2e69`, más el cambio en curso de `execution/order_guard.py`. Claude conserva propiedad de los módulos del backend; este review no los modifica. Los resultados corresponden a esta instantánea, no a correcciones posteriores.
+2026-09-09. Revisor: Codex. Base inspeccionada: `addf80a`, incluyendo scanner y guarda de protección. Claude conserva propiedad de los módulos del backend; este review no los modifica. Los resultados corresponden a esta instantánea, no a correcciones posteriores.
 
 Prioridad confirmada por Mark: circuito PAPER esta noche, fee taker **4.5 bps/lado como ASSUMPTION**, sin AWS, sin órdenes desde TradingView, `LIVE_EXECUTION=false`. No esperar al backtest histórico para comenzar el forward logger. No afirmar rentabilidad.
 
@@ -14,13 +14,15 @@ Desde `backend`, con el intérprete que ya tiene httpx instalado:
 & 'C:/Users/Mark/AppData/Local/Programs/Python/Python312/python.exe' -B -m unittest discover -s review_tests -v
 ```
 
-Primera corrida de las 17 pruebas: **11 fallos de aserción, 6 pruebas aprobadas**. Los fallos son intencionalmente visibles y afirman el comportamiento requerido; no están ocultos con `expectedFailure` ni significan que el test se haya aprobado. La suite normal se ejecuta aparte con `discover -s tests -t .`.
+Corrida original de 19 pruebas en `addf80a`: **13 fallos de aserción, 6 pruebas aprobadas**. Los fallos son intencionalmente visibles y afirman el comportamiento requerido; no están ocultos con `expectedFailure` ni significan que el test se haya aprobado. La suite normal se ejecuta aparte con `discover -s tests -t .`: **25/25 aprobadas**.
+
+Se añadió una prueba número 20 para el feed 5m retrasado incluso con reloj común. Claude está corrigiendo estos módulos; ver la actualización al final antes de interpretar los hallazgos como estado actual.
 
 ## R03-01 · P1 · Contexto HTF posterior a la señal 5m
 
 **Fallo:** `HyperliquidData.multi_timeframe(now_ms=None)` deja que cada consulta capture su propio reloj. Si 5m se consulta antes de las 04:00 y 1H/4H después, se mezclan cierres de 03:55 y 04:00. `engine.scan()` puede usar la nueva hora para decidir sobre una vela anterior.
 
-**Prueba:** `test_fetches_cannot_leak_later_htf_into_earlier_5m` simula el cambio de hora con transporte local. Se recibe 1H posterior al cierre efectivo de 5m.
+**Pruebas:** `test_fetches_cannot_leak_later_htf_into_earlier_5m` simula el cambio de hora con transporte local. Se recibe 1H posterior al cierre efectivo de 5m. `test_common_clock_also_respects_lagging_5m_feed` reproduce el problema restante si 5m viene retrasado aunque las tres consultas compartan reloj.
 
 **Cambio mínimo propuesto:** fijar un único `as_of` al inicio y filtrar 1H/4H adicionalmente por el cierre de la última 5m realmente disponible. Considerar retrasos del venue incluso con reloj común. No completar una ventana faltante con datos posteriores a la señal.
 
@@ -72,11 +74,27 @@ Primera corrida de las 17 pruebas: **11 fallos de aserción, 6 pruebas aprobadas
 
 **Cambio mínimo propuesto:** validar finitud y rangos al leer OHLCV/cotizaciones/funding y al entrar en riesgo/protección; rechazar edades negativas/no finitas. Propagar motivo de datos inválidos al journal y kill switch, sin defaults que aparenten frescura.
 
+## R03-08 · P1 · Scanner presenta una señal expirada como ejecutable
+
+**Fallo:** el scanner verifica frescura de datos con un umbral de 420 segundos, pero no el TTL de señal de 90 segundos. Una candidata con 91 segundos queda `executable=true`. Frescura del feed y vigencia de la señal son condiciones distintas.
+
+**Prueba:** `test_expired_candidate_cannot_be_marked_executable`, con saldo PAPER explícito y candidato aislado mediante mock.
+
+**Cambio mínimo propuesto:** comprobar edad desde cierre de confirmación contra `signal_ttl_seconds`, tanto al construir la tarjeta como nuevamente al pulsar ENTER; usar el mismo reloj de evaluación. Expirada implica bloqueo con motivo visible.
+
+## R03-09 · P2 · Errores de datos desaparecen del forward journal
+
+**Fallo:** `Scanner.run()` captura errores de mercado/frescura y los imprime, pero no escribe el evento en el logger persistente. El historial omite precisamente intervalos donde no se pudo evaluar.
+
+**Prueba:** `test_data_failure_is_written_to_journal` fuerza un error del adaptador sin red y comprueba el registro duradero.
+
+**Cambio mínimo propuesto:** registrar también evaluaciones fallidas con timestamp, fuente, motivo y ejecución bloqueada; no inventar precios ni señal. Conservar el contador de errores y permitir distinguir ausencia de setup de ausencia de datos.
+
 ## Comprobaciones positivas y pendientes de integración
 
 Las seis pruebas positivas verifican: exclusión de vela en curso; rechazo del segundo trade diario; time stop exacto por tiempo transcurrido; sizing TINY válido ≤ $1 planificado; protección SHORT completa; y `LIVE_EXECUTION=false` bloqueando permiso de órdenes en los cinco modos. No hay un adaptador de escritura integrado que permita probar todavía el bloqueo end-to-end.
 
-Revisar también la integración de fee provenance: tasa configurable 0.00045 con etiqueta ASSUMPTION, tier no confirmado, visible en tarjeta/journal. El valor por defecto no puede presentarse como fee real de Mark.
+El scanner ya registra `fee_taker_confirmed=false`. Completar su presentación en tarjeta/journal como tasa configurable 0.00045 con etiqueta ASSUMPTION. El valor por defecto no puede presentarse como fee real de Mark. Verificar además el horizonte de funding esperado: el default de cero horas deja ese costo fuera del gate.
 
 El adaptador expone `6 - szDecimals` como decimales, pero eso no basta para validar precios: Hyperliquid limita además a **5 cifras significativas**, con excepción de precios enteros. La [documentación oficial](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size) distingue ambos límites. Por ejemplo, con szDecimals=2, 83.1234 tiene cuatro decimales pero seis cifras significativas. Falta validar esta propiedad al integrar sizing/órdenes.
 
@@ -85,3 +103,17 @@ La paridad Pine/Python sigue pendiente de compilar y ejecutar Pine en TradingVie
 ## Coordinación
 
 Claude: corregir sus módulos, ejecutar estas pruebas sin rebajar sus requisitos y reportar el commit. Codex: verificar el diff, las reproducciones y la integración; añadir casos de review en este directorio sin editar archivos de Claude. Continuar forward logger y trabajo PAPER independiente mientras se corrigen los gates.
+
+## Revisión de correcciones en curso sobre `6dc3200`
+
+El diff de Claude ya preserva `manual_kill`, rechaza OHLC no finito y edad NaN, valida el lado del stop y fija un reloj común. Las pruebas específicas de esos casos pasaron al releer. Todavía hace falta recortar HTF al último cierre 5m realmente recibido: la nueva prueba de feed retrasado falla.
+
+El nuevo `requires_collateral_check=False` deja el chequeo apagado por defecto incluso si el saldo explícito es cero. No cierra R03-03: PAPER necesita saldo simulado explícito para probar restricciones. Si se permite un modo de investigación sin cuenta, debe ser explícito y sus resultados no autorizar ENTER.
+
+Durante una corrida con archivos en edición, `order_guard.py` utilizaba `math.isfinite` sin `import math`, provocando cuatro errores. Esto es un problema de ejecución, no una prueba de rechazo correcto. Añadir el import y volver a probar las rutas positivas y negativas. No marcar R03-05/06 corregidos por el mero hecho de que PAPER capture esa excepción y rechace todas las entradas.
+
+Los diffs de TTL y registro de errores del scanner también están en curso; requieren una nueva corrida cuando termine la edición. Ver REVIEW_004 para los fallos del motor PAPER recién incorporado.
+
+**Revalidación posterior de esos cambios:** desaparecieron los cuatro errores de importación; pasan protección SHORT válida, rechazos de datos incompletos/NaN, precio atravesando SL, TTL del scanner y registro del fallo de datos. REVIEW_003 queda en **20 pruebas: 17 aprobadas y 3 fallos**, correspondientes a feed 5m retrasado, high faltante en sesión previa y colateral cero. El caso de cinco barras 1H ahora se rechaza. Esto valida los casos ejecutados, no toda combinación posible de datos/riesgo.
+
+En la misma pasada, REVIEW_004 da **14 pruebas: 3 aprobadas y 11 fallos**. Total independiente: **34 pruebas, 20 aprobadas y 14 fallos**, sin errores de ejecución. La suite original pasó **25/25** antes de estos últimos ajustes; corresponde repetirla después del cierre del diff de implementación.

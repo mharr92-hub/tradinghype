@@ -89,6 +89,20 @@ class TestClearanceCoverage(unittest.TestCase):
 
 
 class TestNativeDataBoundary(unittest.TestCase):
+    def test_common_clock_also_respects_lagging_5m_feed(self):
+        boundary = BAR_4H_MS
+        adapter = HyperliquidData(client=Mock())
+        # At 04:00 the 5m feed is late, while HTF already returned its new close.
+        rows = {"5m": [Candle(boundary - 2 * BAR_5M_MS, 100, 101, 99, 100, 1)],
+                "1h": [Candle(boundary - BAR_1H_MS, 100, 101, 99, 100, 1)],
+                "4h": [Candle(0, 100, 101, 99, 100, 1)]}
+        with patch.object(adapter, "closed_candles",
+                          side_effect=lambda interval, *args, **kwargs: rows[interval]):
+            c4, c1, c5 = adapter.multi_timeframe(now_ms=boundary + 1)
+        cutoff = c5[-1].ts + BAR_5M_MS
+        self.assertTrue(all(c.ts + BAR_1H_MS <= cutoff for c in c1))
+        self.assertTrue(all(c.ts + BAR_4H_MS <= cutoff for c in c4))
+
     def test_fetches_cannot_leak_later_htf_into_earlier_5m(self):
         boundary = BAR_4H_MS
 

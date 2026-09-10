@@ -19,9 +19,9 @@ Actualizado: 2026-09-09, tras el historial compartido por Mark. Este registro co
 
 ## Estado comprobado del workspace
 
-HEAD al revisar: `96c384e` (precedido por `d020d67` y `f83a5ea`). Ya existe Git; los informes anteriores que indicaban ausencia de `.git` corresponden a una pasada previa.
+Última base revisada: `6dc3200`, con adaptador Hyperliquid, scanner, forward logger y primera implementación PAPER/fills/funding. Ya existe Git y `main` en el remoto autorizado; los informes anteriores que indicaban ausencia de `.git` corresponden a una pasada previa. Claude continúa editando: los resultados de cada review pertenecen a la instantánea indicada.
 
-Existe motor Python LONG/SHORT, helpers de riesgo/límites, settings y guardas; hay indicador Pine preliminar. Siguen pendientes la integración de datos, API, persistencia, app, paper completo y adaptador de órdenes. No considerar títulos de commits como evidencia de una orden real.
+Existe motor Python LONG/SHORT, helpers de riesgo/límites, settings y guardas; hay indicador Pine preliminar. El circuito completo con persistencia, app y PAPER end-to-end todavía requiere validación. No considerar títulos de commits como evidencia de una orden real.
 
 Se ejecutó con Python 3.12.13, desde `backend`:
 
@@ -33,7 +33,7 @@ Resultado: **25/25 OK**, con ResourceWarning heredado de un archivo de fuente ab
 
 Estos tests no acreditan la ejecución completa ni cobertura de todas las condiciones SHORT, sizing del venue, fills, funding, reinicios, concurrencia y protección post-fill.
 
-La guarda de protección inspeccionada todavía verifica presencia de TP pero no su precio, y no comprueba cantidad, lado, instrumento y reduce-only contra la posición. Debe corregirse y probarse antes de integrar órdenes reales.
+La guarda ya amplió las comprobaciones de TP/precio/cantidad/lado/instrumento/reduce-only. REVIEW_003 reproduce los huecos restantes en campos desconocidos y valores no finitos; consultar sus pruebas y las correcciones posteriores, sin reutilizar el hallazgo inicial como estado actual.
 
 ## Arquitectura recomendada, conservando el PRD
 
@@ -55,7 +55,7 @@ Codex: consolidar decisiones de producto, planificar dependencias y criterios de
 
 Ambos: un responsable por archivo; commits pequeños con tests; registrar el estado real y limitaciones; no atribuir cobertura a módulos todavía ausentes. Usar la última versión de los hallazgos, ya que algunos de AUDIT_002 fueron corregidos posteriormente. Evitar `git add -A` mientras la otra sesión escribe: seleccionar explícitamente los archivos propios para no publicar una revisión a medio escribir.
 
-Codex mantiene `backend/review_tests/test_review_003.py` y `docs/REVIEW_003_PAPER_BLOCKERS.md`. Claude corrige los módulos señalados, manteniendo las pruebas del reviewer como contrato. No reducir requisitos para volverlas verdes.
+Codex mantiene `backend/review_tests/test_review_003.py`, `backend/review_tests/test_review_004_paper.py` y sus informes `docs/REVIEW_003_PAPER_BLOCKERS.md` / `docs/REVIEW_004_PAPER_FILLS_FUNDING.md`. Claude corrige los módulos señalados, manteniendo las pruebas del reviewer como contrato. No reducir requisitos para volverlas verdes.
 
 ## Orden de entrega de esta noche
 

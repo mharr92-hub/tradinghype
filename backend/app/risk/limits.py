@@ -15,6 +15,7 @@ que es exactamente la pregunta que abre el limite de 1 trade/dia.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -63,15 +64,28 @@ class DayState:
     critical_reason: str = ""
 
     def rollover_if_needed(self, now_ms: int, cfg: Config) -> None:
+        """Cambio de dia UTC. Lo que se reinicia es el CUPO del dia, no las
+        alarmas.
+
+        Sobreviven al cambio de dia todo lo que un humano apago a mano o el
+        sistema levanto por avería: `manual_kill`, `critical` y la racha de
+        perdidas. Un kill switch que se desactiva solo a medianoche no es un
+        kill switch: es un temporizador, y justo el dia que Mark lo active
+        preocupado por algo, a las 00:00 UTC el sistema volveria a operar sin
+        que nadie lo haya decidido.
+        """
         start = session_start_ms(now_ms, cfg.session_utc_hour)
-        if start != self.session_start_ms:
-            prev_losses = self.consecutive_losses      # sobrevive al cambio de dia
-            critical = self.critical                   # CRITICAL tambien: es manual
-            reason = self.critical_reason
-            self.__init__(session_start_ms=start)
-            self.consecutive_losses = prev_losses
-            self.critical = critical
-            self.critical_reason = reason
+        if start == self.session_start_ms:
+            return
+        preserved = dict(
+            consecutive_losses=self.consecutive_losses,
+            manual_kill=self.manual_kill,
+            critical=self.critical,
+            critical_reason=self.critical_reason,
+        )
+        self.__init__(session_start_ms=start)
+        for k, v in preserved.items():
+            setattr(self, k, v)
 
 
 @dataclass(frozen=True)
@@ -103,6 +117,10 @@ def can_open_new_trade(day: DayState, cfg: Config, equity: float,
         return Gate(False, KILL_POSITION_MISMATCH)
     if api_error_count > 0:
         return Gate(False, KILL_API_ERRORS)
+    # NaN se cuela por cualquier comparacion: `nan > 120` es False, asi que un
+    # dato de edad desconocida pasaria por fresco. Se comprueba explicitamente.
+    if not math.isfinite(data_age_seconds):
+        return Gate(False, f"{KILL_STALE_DATA}:non_finite_age")
     if data_age_seconds > max_data_age_seconds:
         return Gate(False, KILL_STALE_DATA)
     if has_open_position:
