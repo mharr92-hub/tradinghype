@@ -116,4 +116,6 @@ Los diffs de TTL y registro de errores del scanner también están en curso; req
 
 **Revalidación posterior de esos cambios:** desaparecieron los cuatro errores de importación; pasan protección SHORT válida, rechazos de datos incompletos/NaN, precio atravesando SL, TTL del scanner y registro del fallo de datos. REVIEW_003 queda en **20 pruebas: 17 aprobadas y 3 fallos**, correspondientes a feed 5m retrasado, high faltante en sesión previa y colateral cero. El caso de cinco barras 1H ahora se rechaza. Esto valida los casos ejecutados, no toda combinación posible de datos/riesgo.
 
-En la misma pasada, REVIEW_004 da **14 pruebas: 3 aprobadas y 11 fallos**. Total independiente: **34 pruebas, 20 aprobadas y 14 fallos**, sin errores de ejecución. La suite original pasó **25/25** antes de estos últimos ajustes; corresponde repetirla después del cierre del diff de implementación.
+En la misma pasada, REVIEW_004 da **14 pruebas: 3 aprobadas y 11 fallos**. Total independiente: **34 pruebas, 20 aprobadas y 14 fallos**, sin errores de ejecución.
+
+**Corte verificado: 2026-09-09 20:26:35 America/Bogota (2026-09-10 01:26:35 UTC).** Se ejecutaron ambas suites en un mismo proceso: suite de Claude ampliada a **45/45 aprobadas**; independiente **20/34 aprobadas, 14 fallos, cero errores y cero skips**. Se comparó el SHA-256 agregado de fuentes y tests antes/después: los archivos no cambiaron durante esa corrida. Digest de la instantánea: `47c5c898064ddfd6417b0b5ac6b2e88f0a7fc36de60429c17d1d4cfe4d280449`. No extrapolar este resultado a cambios posteriores.
