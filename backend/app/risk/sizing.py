@@ -116,6 +116,25 @@ def size_position(entry: float, stop: float, side: str, cfg: Config,
     if notional > venue.max_notional_usd:
         return Sizing(False, qty, notional, planned_risk, budget, "above_max_notional")
 
+    # Topes que NO dependen de que el stop se ejecute. El sizing por riesgo da
+    # por hecho que la posicion se cierra en el stop; un hueco lo desmiente. Un
+    # setup con el stop muy pegado produce un nocional enorme para el mismo $1
+    # de riesgo planificado, y ese nocional es la exposicion REAL ante un hueco.
+    # Aqui se recorta la CANTIDAD en vez de rechazar: bajar el tamaño reduce el
+    # riesgo, nunca lo aumenta, asi que no viola la regla de no subir riesgo.
+    cap_notional = cfg.max_notional_usd
+    if equity > 0 and cfg.max_leverage_used > 0:
+        cap_notional = min(cap_notional, equity * cfg.max_leverage_used)
+    if notional > cap_notional:
+        qty = math.floor((cap_notional / entry) * step) / step
+        if qty <= 0:
+            return Sizing(False, 0.0, 0.0, 0.0, budget, "notional_cap_below_precision")
+        notional = qty * entry
+        planned_risk = qty * loss_per_unit
+        capped_reason = "ok_capped_by_notional"
+    else:
+        capped_reason = "ok"
+
     # El tick size existia como campo decorativo. Un entry que no cae en un
     # tick valido no es el precio al que se va a operar, asi que el riesgo
     # calculado tampoco es el real.
@@ -137,7 +156,7 @@ def size_position(entry: float, stop: float, side: str, cfg: Config,
             return Sizing(False, qty, notional, planned_risk, budget,
                           "insufficient_collateral")
 
-    return Sizing(True, qty, notional, planned_risk, budget, "ok")
+    return Sizing(True, qty, notional, planned_risk, budget, capped_reason)
 
 
 def expected_profit_usd(entry: float, tp: float, qty: float, side: str,

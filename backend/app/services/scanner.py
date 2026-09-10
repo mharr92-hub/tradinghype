@@ -95,6 +95,11 @@ class ScanRecord:
     execution_block_reason: Optional[str] = None
     blocked_by_daily_limit: bool = False
 
+    # Congelamiento (RESEARCH_PLAN 2.4): identifica QUE estrategia produjo esta
+    # observacion. Si alguien mueve un umbral a mitad de la muestra, las dos
+    # mitades quedan separables en el analisis en vez de mezclarse en silencio.
+    strategy_fingerprint: Optional[str] = None
+    strategy_arm: Optional[str] = None
     signal_age_seconds: Optional[float] = None
     checks: Dict[str, object] = field(default_factory=dict)
     checklist: List[str] = field(default_factory=list)
@@ -199,6 +204,7 @@ class Scanner:
             funding_rate_hourly=funding,
             fee_taker=cfg.fee_taker,
             fee_taker_confirmed=cfg.fee_taker_confirmed,
+            strategy_fingerprint=cfg.fingerprint(), strategy_arm=cfg.arm_label(),
             data_age_seconds=age,
             checks={k: v for k, v in ck.items()},
         )

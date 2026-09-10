@@ -18,6 +18,7 @@ Principios (PRD 4):
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -127,6 +128,22 @@ class Config:
     risk_usd: float = 125.0             # [PROD] produccion; TINY usa 1.00
     qty_decimals: int = 2
 
+    # TOPES INDEPENDIENTES DEL STOP (decision de Mark, 2026-09-09).
+    #
+    # El sizing por riesgo asume que el stop se ejecuta donde esta. Un hueco de
+    # precio rompe ese supuesto: medido en PAPER, un hueco bajo el stop produjo
+    # -4.03R. `risk_usd` acota la perdida PLANIFICADA, no la real.
+    #
+    # Estos dos topes si acotan la exposicion pase lo que pase, porque no
+    # dependen de que ninguna orden llegue a ejecutarse:
+    #   - `max_notional_usd`: un hueco del X % cuesta como mucho X % de esto.
+    #   - `max_leverage_used`: limita el nocional contra el equity real.
+    # Con 200 USD de nocional, un hueco brutal del 20 % cuesta 40 USD. Sin tope,
+    # el mismo hueco sobre una posicion dimensionada con un stop muy ajustado
+    # puede costar cientos.
+    max_notional_usd: float = 500.0
+    max_leverage_used: float = 2.0
+
     # --- ejecucion (PRD 13) ---
     signal_ttl_seconds: int = 90
     max_drift_r: float = 0.10
@@ -158,6 +175,38 @@ class Config:
     @property
     def max_hold_bars_5m(self) -> int:
         return self.max_hold_hours * 12
+
+    def fingerprint(self) -> str:
+        """Huella de los parametros CONGELADOS de la estrategia.
+
+        Viaja con cada señal al journal. Es el mecanismo que hace detectable el
+        congelamiento: si alguien mueve un umbral a mitad de la muestra, la
+        huella cambia y las dos mitades dejan de mezclarse por accidente al
+        analizarlas. Sin esto, "no toques los parametros" es una promesa; con
+        esto, es un dato.
+
+        Se excluyen a proposito los campos que NO definen la estrategia y
+        cambian legitimamente en cada corrida: la tasa de funding vigente, la
+        precision del venue, el presupuesto de riesgo y los flags de direccion.
+        Incluirlos daria una huella distinta cada hora y no serviria para nada.
+        """
+        volatile = {
+            "funding_rate_hourly", "funding_expected_hours", "qty_decimals",
+            "risk_mode", "risk_pct", "risk_usd", "allow_long", "allow_short",
+            "fee_taker_confirmed",
+        }
+        items = sorted((k, v) for k, v in self.__dict__.items()
+                       if k not in volatile)
+        payload = ";".join(f"{k}={v!r}" for k, v in items)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+    def arm_label(self) -> str:
+        """Nombre del brazo de la matriz al que corresponde esta config
+        (HYPE_TRADING_RESEARCH_PLAN 3). Se guarda junto a la huella para que un
+        reporte diga 'F1·E2' y no solo un hash."""
+        f = "F0" if not self.require_fvg else ("F2" if self.require_momentum_long else "F1")
+        e = {1.0: "E1", 1.6: "E2", 2.0: "E3"}.get(round(self.rr, 4), f"E?{self.rr}")
+        return f"{f}·{e}"
 
 
 # --- perfiles ---------------------------------------------------------------

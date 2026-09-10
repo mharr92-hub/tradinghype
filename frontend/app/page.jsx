@@ -275,11 +275,51 @@ export default function Home() {
           <div className="big">NO TRADE</div>
           <p className="sub">
             No hay ningún setup A+ ahora mismo. Es un resultado válido, no un
-            fallo: el sistema no fuerza operaciones. Estado actual:{" "}
-            <strong>{d.setup_state}</strong>.
+            fallo: el sistema no fuerza operaciones.
           </p>
+          <div className="waiting">
+            <div className="wrow">
+              <span className="wk">LONG</span>
+              <span className={`wv ${d.long_blocked_by ? "blocked" : "live"}`}>
+                {d.long_blocked_by
+                  ? `BLOQUEADO: ${d.long_blocked_by}`
+                  : `EN CURSO · ${d.long_state}`}
+              </span>
+            </div>
+            <div className="wrow">
+              <span className="wk">SHORT</span>
+              <span className={`wv ${d.short_blocked_by ? "blocked" : "live"}`}>
+                {d.short_blocked_by
+                  ? `BLOQUEADO: ${d.short_blocked_by}`
+                  : `EN CURSO · ${d.short_state}`}
+              </span>
+            </div>
+          </div>
         </div>
       )}
+
+      {/* Lo que el sistema ha visto hoy. Un contador de "casi" alto con cero
+          señales significa algo muy distinto de un día sin oportunidades. */}
+      <div className="grid" style={{ marginTop: 18 }}>
+        <Cell k="Señales A+ hoy" v={d.a_plus_today} tone={d.a_plus_today ? "long" : "muted"} />
+        <Cell k="Casi (near miss)" v={d.near_misses_today} tone={d.near_misses_today ? "" : "muted"} />
+        <Cell k="Velas escaneadas" v={d.scans_today} tone="muted" />
+        <Cell
+          k="Forward log"
+          v={d.forward_log_running ? "CORRIENDO ✓" : "PARADO ✗"}
+          tone={d.forward_log_running ? "long" : "short"}
+        />
+        <Cell
+          k="Errores de datos"
+          v={d.data_errors_today}
+          tone={d.data_errors_today ? "short" : "muted"}
+        />
+        <Cell
+          k="Estrategia"
+          v={`${d.strategy_arm || "—"} · ${(d.strategy_fingerprint || "").slice(0, 8)}`}
+          tone="muted"
+        />
+      </div>
 
       {d.position && (
         <div className="card" style={{ marginTop: 18 }}>

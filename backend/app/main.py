@@ -120,6 +120,16 @@ class Dashboard(BaseModel):
     data_age_seconds: Optional[float]
     error: Optional[str]
     warnings: List[str]
+    # Que esta esperando el sistema, no solo que no opera.
+    long_blocked_by: Optional[str] = None
+    short_blocked_by: Optional[str] = None
+    a_plus_today: int = 0
+    near_misses_today: int = 0
+    scans_today: int = 0
+    data_errors_today: int = 0
+    forward_log_running: bool = False
+    strategy_arm: Optional[str] = None
+    strategy_fingerprint: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +158,91 @@ def _side_state(rec: ScanRecord, side: str) -> str:
     if rec.side != side:
         return "NO_SETUP"
     return rec.state
+
+
+def _blocked_by(rec: ScanRecord, side: str) -> Optional[str]:
+    """QUE esta impidiendo esta direccion ahora mismo.
+
+    "NO TRADE" a secas no dice nada util: no distingue "el mercado no tiene
+    tendencia" de "hay un setup montado esperando la vela de confirmacion".
+    Son situaciones opuestas — en una no va a pasar nada en horas, en la otra
+    puede saltar en cinco minutos — y el operador necesita saber en cual esta.
+    """
+    if side == "SHORT" and not SETTINGS.allow_short:
+        return "SHORT deshabilitado por politica"
+
+    regime_ok = rec.regime_4h_long if side == "LONG" else rec.regime_4h_short
+    if not regime_ok:
+        return "regimen 4H"
+    if rec.side != side:
+        # El regimen 4H permite esta direccion pero el motor evaluo la otra, o
+        # ninguna: el que falla es el 1H.
+        return "alineacion 1H"
+
+    if rec.state == "WAITING_FOR_RETEST":
+        return None                       # hay FVG vivo; no es un bloqueo
+    if rec.state == "WAITING_FOR_CONFIRMATION":
+        return None                       # tocado, esperando la vela
+    if rec.reason.startswith("momentum_fail:"):
+        return f"momentum ({rec.reason.split(':', 1)[1]})"
+    if rec.reason == "target_clearance":
+        cr = rec.clearance_r
+        return f"sin espacio hasta el objetivo ({cr:.2f}R)" if cr else "target clearance"
+    if rec.reason == "cost_gate":
+        return f"costos ({rec.cost_r:.3f}R)" if rec.cost_r else "costos"
+    if rec.reason == "no_setup":
+        return "sin FVG en la sesion"
+    if rec.reason == "session_warmup":
+        return f"warmup de sesion ({rec.session_bars} velas)"
+    return rec.reason
+
+
+# Motivos que significan "el setup existia y se quedo a un paso". Sirven para
+# contar NEAR MISSES: si hay muchos, el sistema esta viendo el mercado pero
+# algun umbral esta demasiado apretado — o justo bien. Sin el conteo no se
+# puede distinguir "no hay oportunidades" de "las hay y las estoy filtrando".
+_NEAR_MISS_PREFIXES = ("momentum_fail:", "target_clearance", "cost_gate",
+                       "rules_incomplete:")
+
+
+def _today_stats() -> Dict[str, object]:
+    """Recuento del dia leido del JOURNAL, no de memoria.
+
+    Se lee del archivo a proposito: si el proceso se reinicio hace diez minutos,
+    la memoria dice cero y el journal dice la verdad. El journal es la evidencia.
+    """
+    import json as _json
+    import os as _os
+
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    path = _os.path.join("journal", f"scans-{day}.jsonl")
+    out = {"a_plus": 0, "near_misses": 0, "scans": 0, "errors": 0,
+           "forward_log_running": False, "last_write_age_s": None}
+    if not _os.path.isfile(path):
+        return out
+    try:
+        age = time.time() - _os.path.getmtime(path)
+        out["last_write_age_s"] = round(age, 1)
+        # El escaner escribe una vez por vela de 5m. Si el ultimo registro tiene
+        # mas de 11 minutos, se perdio al menos una vela: no esta corriendo.
+        out["forward_log_running"] = age < 11 * 60
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                r = _json.loads(line)
+                out["scans"] += 1
+                reason = r.get("reason", "")
+                if r.get("has_signal"):
+                    out["a_plus"] += 1
+                elif any(reason.startswith(p) for p in _NEAR_MISS_PREFIXES):
+                    out["near_misses"] += 1
+                if reason.startswith(("market_data_error", "stale_data")):
+                    out["errors"] += 1
+    except (OSError, ValueError):
+        pass
+    return out
 
 
 def _build_card(rec: ScanRecord, now_ms: int) -> Optional[Card]:
@@ -231,6 +326,7 @@ def dashboard():
             fvg=None, card=None, position=None, data_age_seconds=None,
             error=S.error, warnings=_warnings(None))
 
+    stats = _today_stats()
     fvg = None
     if rec.checks.get("fvg_lo") is not None:
         fvg = {"lo": float(rec.checks["fvg_lo"]), "hi": float(rec.checks["fvg_hi"])}
@@ -248,6 +344,12 @@ def dashboard():
         position=summarize(S.position) if S.position else None,
         data_age_seconds=rec.data_age_seconds, error=S.error,
         warnings=_warnings(rec),
+        long_blocked_by=_blocked_by(rec, "LONG"),
+        short_blocked_by=_blocked_by(rec, "SHORT"),
+        a_plus_today=stats["a_plus"], near_misses_today=stats["near_misses"],
+        scans_today=stats["scans"], data_errors_today=stats["errors"],
+        forward_log_running=bool(stats["forward_log_running"]),
+        strategy_arm=CFG.arm_label(), strategy_fingerprint=CFG.fingerprint(),
     )
     # PRD 14: la API no puede exponer nada que se lea como probabilidad.
     assert_no_probability(payload.model_dump())
