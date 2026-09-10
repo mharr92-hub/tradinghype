@@ -234,6 +234,18 @@ quantity = risk_budget / (price_risk_por_unidad + costos_esperados_del_trade_per
 
 Debe respetar el **minimum notional** del exchange, tick size, size precision, colateral disponible y notional máximo. Si no se puede construir una posición válida sin superar $1 de riesgo: **SKIP**. Jamás se sube el riesgo para poder operar.
 
+> ### El riesgo es PLANIFICADO, no garantizado
+>
+> Medido en el motor PAPER el 2026-09-09: un hueco de precio por debajo del stop produjo **−4.03R**, no −1R. El stop no es un contrato con el mercado; es una orden que se ejecuta al primer precio disponible, y si el mercado abre cuatro puntos por debajo, ese es el precio.
+>
+> Con posiciones de hasta 24 h que cruzan la noche y el fin de semana, esto **no es teórico**.
+>
+> Consecuencias:
+> 1. `$1 de riesgo` en TINY significa `$1 si el stop se ejecuta donde está`. La pérdida real puede ser un múltiplo.
+> 2. La Signal Card debe decir **"riesgo planificado"**, nunca "pérdida máxima".
+> 3. El backtester debe reportar aparte la distribución de pérdidas **peores que 1R**. Si el 5 % de los stops se ejecutan a 2R o más, la expectancy calculada asumiendo −1R está inflada.
+> 4. El mismo razonamiento se aplica al límite de pérdida diaria del 1 %: es un umbral que dispara un kill switch, no un suelo.
+
 ### 9.3 PRODUCTION
 
 Risk budget **$100–$150**, default **$125**. Target económico ~$200, **derivado de un trade de ≈1.6R**, nunca de un TP monetario artificial.

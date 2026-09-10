@@ -33,6 +33,33 @@ VALID_MODES = (MODE_RESEARCH, MODE_PAPER, MODE_SHADOW, MODE_TINY, MODE_LIVE)
 REAL_MONEY_MODES: FrozenSet[str] = frozenset({MODE_TINY, MODE_LIVE})
 
 
+def _load_dotenv() -> None:
+    """Carga .env desde la raiz del repo, SIN pisar variables ya definidas.
+
+    El orden importa: lo que ya esta en el entorno gana sobre el archivo. Asi,
+    un `HYPE_MODE=RESEARCH` puesto a mano para una sesion no queda silenciosamente
+    sobrescrito por un .env que alguien dejo en PAPER hace semanas.
+
+    Implementado a mano en vez de con python-dotenv para no añadir dependencia
+    al camino que decide si se puede operar: cuanto menos codigo de terceros
+    entre el disco y `LIVE_EXECUTION`, mejor.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+    path = os.path.join(root, ".env")
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.split("#", 1)[0].strip().strip("\"'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -94,6 +121,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    _load_dotenv()
     s = Settings(
         mode=os.getenv("HYPE_MODE", MODE_RESEARCH).strip().upper(),
         # El default es False en el codigo, no solo en .env.example.
