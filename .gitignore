@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Entorno y secretos — NUNCA commitear
+.env
+.env.local
+*.key
+*.pem
+secrets/
+promotion.yaml
+
+# Datos y resultados
+data/
+*.csv
+!backend/tests/fixtures/*.csv
+resultados_backtest/
+research_out/
+*.sqlite
+*.sqlite3
+*.db
+
+# Frontend
+node_modules/
+.next/
+out/
+.vercel
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
