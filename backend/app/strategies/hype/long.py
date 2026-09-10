@@ -88,7 +88,11 @@ def momentum(c5: List[Candle], t: int, cfg: Config
     if not checks["volume"]:
         fail = fail or "volume"
 
-    if cfg.require_vwap_slope_long:
+    # F2 = RSI + MACD + volumen + DIRECCION DEL VWAP (PRD 5.5, RESEARCH_PLAN 3).
+    # La pendiente del VWAP no tiene interruptor propio cuando F2 esta activo:
+    # con dos flags separados, `Config(require_momentum_long=True)` a secas
+    # producia un "F2" al que le faltaba una de sus cuatro condiciones.
+    if cfg.require_momentum_long or cfg.require_vwap_slope_long:
         ok = False
         if t >= 1:
             vw_t, _ = vwap_at(c5, t, cfg.session_utc_hour)

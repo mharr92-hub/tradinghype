@@ -23,7 +23,7 @@ justo lo que hace que un swing sea "confirmado" y no una adivinanza.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from ..indicators import Candle, session_start_ms
 from .common import SIDE_LONG, Config
@@ -68,9 +68,12 @@ def prev_day_level(c5: Sequence[Candle], t: int, side: str,
     """High (LONG) o low (SHORT) de la sesion ANTERIOR.
 
     La sesion anterior es [inicio_sesion_actual - 24h, inicio_sesion_actual).
-    Devuelve None si esa ventana no esta cubierta por los datos disponibles:
-    fail-open aqui es correcto porque la ausencia de un nivel no inventa un
-    obstaculo; el gate solo rechaza cuando VE algo que estorba.
+    Devuelve None si no hay ninguna vela en esa ventana.
+
+    OJO: un None aqui NO significa "no hay resistencia". Puede significar
+    "faltan datos". Quien decide si los datos alcanzan es `coverage_ok()`, y
+    `check()` lo consulta ANTES de mirar niveles. Esta funcion no vale por si
+    sola como gate.
     """
     cur_start = session_start_ms(c5[t].ts, cfg.session_utc_hour)
     prev_start = cur_start - DAY_MS
@@ -127,15 +130,49 @@ def clearance_r(entry: float, stop: float, level: Optional[Level],
     return max(0.0, dist / r)
 
 
+def coverage_ok(c1h: Sequence[Candle], c5: Sequence[Candle], t: int,
+                cfg: Config) -> Tuple[bool, str]:
+    """¿Hay datos suficientes para que "no hay obstaculo" signifique algo?
+
+    Distincion que el codigo tiene que hacer explicita: "he mirado y no hay
+    resistencia" y "no he podido mirar" NO son lo mismo. Sin esta comprobacion,
+    una serie 1H vacia produciria clearance infinito y aprobaria cualquier
+    trade, que es el fallo mas silencioso posible: el gate parece funcionar.
+
+    Fail-closed: sin cobertura, el trade se rechaza.
+    """
+    min_1h = max(2 * cfg.clearance_pivot_n + 1, cfg.clearance_pivot_n + 1)
+    if len(c1h) < min_1h:
+        return False, f"insufficient_1h_history:{len(c1h)}<{min_1h}"
+
+    if cfg.clearance_use_prev_day:
+        cur_start = session_start_ms(c5[t].ts, cfg.session_utc_hour)
+        prev_start = cur_start - DAY_MS
+        n_prev = sum(1 for cd in c5 if prev_start <= cd.ts < cur_start)
+        # Una sesion completa son 288 velas de 5m. Se exige el 80 %: por debajo
+        # de eso el high/low de la sesion anterior puede estar simplemente
+        # ausente de los datos, no ausente del mercado.
+        need = int(0.8 * (DAY_MS // (5 * 60 * 1000)))
+        if n_prev < need:
+            return False, f"insufficient_prev_session:{n_prev}<{need}"
+
+    return True, "ok"
+
+
 def check(c1h: Sequence[Candle], c5: Sequence[Candle], t: int, side: str,
           entry: float, stop: float, cfg: Config):
     """Evalua el gate. Devuelve (pasa, clearance_R, nivel_bloqueante).
 
-    Pasa si el espacio hasta el primer obstaculo alcanza al menos el objetivo
-    del brazo activo (`cfg.rr`). Si no, el trade se rechaza: NO se reduce el
-    objetivo para que quepa, porque eso seria mover el R:R despues de haber
-    visto el obstaculo (PRD 3, PRD 8).
+    Pasa si (a) hay datos suficientes para pronunciarse y (b) el espacio hasta
+    el primer obstaculo alcanza al menos el objetivo del brazo activo
+    (`cfg.rr`). Si no, el trade se rechaza: NO se reduce el objetivo para que
+    quepa, porque eso seria mover el R:R despues de haber visto el obstaculo
+    (PRD 3, PRD 8).
     """
+    ok_cov, _ = coverage_ok(c1h, c5, t, cfg)
+    if not ok_cov:
+        return False, 0.0, None
+
     levels = collect_levels(c1h, c5, t, side, cfg)
     blocking = first_blocking_level(levels, entry, side)
     cr = clearance_r(entry, stop, blocking, side)

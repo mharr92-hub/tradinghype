@@ -33,7 +33,15 @@ SIDE_SHORT = "SHORT"
 STATE_NO_SETUP = "NO_SETUP"
 STATE_WAITING_RETEST = "WAITING_FOR_RETEST"
 STATE_WAITING_CONFIRMATION = "WAITING_FOR_CONFIRMATION"
-STATE_SIGNAL_READY = "A_PLUS_READY"
+STATE_LONG_CANDIDATE = "LONG_CANDIDATE"
+STATE_SHORT_CANDIDATE = "SHORT_CANDIDATE"
+# A_PLUS_READY NO lo emite el motor de estrategia: exige gates operativos
+# (sizing, limite diario, kill switches) que solo conoce la capa de riesgo.
+STATE_A_PLUS_READY = "A_PLUS_READY"
+
+
+def STATE_CANDIDATE(side: str) -> str:
+    return STATE_LONG_CANDIDATE if side == SIDE_LONG else STATE_SHORT_CANDIDATE
 
 # Checklist en el orden en que la pinta la Signal Card (PRD 16).
 CHECKLIST_KEYS = ("regime_4h", "align_1h", "fvg", "first_retest", "vwap_band",

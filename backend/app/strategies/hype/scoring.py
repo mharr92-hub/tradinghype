@@ -32,24 +32,57 @@ _FORBIDDEN = ("probability", "prob", "win_chance", "confidence", "odds",
               "probabilidad", "confianza")
 
 
+# Gates OPERATIVOS. El motor de estrategia no puede evaluarlos: dependen del
+# venue (sizing), del estado del dia (limite diario) y de la salud del sistema
+# (kill switches). Por eso A+ no se puede declarar dentro de engine.py.
+OPERATIONAL_GATES = ("sizing_ok", "daily_limit_ok", "kill_switches_clear")
+
+
 @dataclass(frozen=True)
 class Score:
-    """Cumplimiento de reglas. Deliberadamente NO contiene probabilidades."""
+    """Cumplimiento de reglas. Deliberadamente NO contiene probabilidades.
+
+    Dos niveles, y la distincion importa:
+
+      `rules_complete` — todos los gates que el motor SI puede evaluar con las
+          velas en la mano. Corresponde al estado LONG_CANDIDATE/SHORT_CANDIDATE
+          del PRD 10.
+      `is_a_plus` — ademas, los gates operativos (sizing valido, limite diario
+          disponible, kill switches limpios) comprobados y en verde. Es el
+          A_PLUS_READY del PRD 10 y lo unico que puede etiquetarse "A+" en la
+          Signal Card.
+
+    Un score sin gates operativos evaluados NUNCA es A+, aunque las reglas de
+    mercado esten perfectas: un setup impecable que no cabe en el tamaño minimo
+    del venue no es un trade A+, es un trade imposible.
+    """
     side: str
     passed: int
     total: int
+    rules_complete: bool
     is_a_plus: bool
     failed: Tuple[str, ...] = field(default_factory=tuple)
     quality: Dict[str, float] = field(default_factory=dict)
+    operational_evaluated: bool = False
 
     @property
     def label(self) -> str:
         return f"RULE COMPLIANCE {self.passed}/{self.total}"
 
+    @property
+    def stage(self) -> str:
+        if self.is_a_plus:
+            return "A_PLUS_READY"
+        if self.rules_complete:
+            return f"{self.side}_CANDIDATE"
+        return "WAITING"
+
     def as_dict(self) -> Dict[str, object]:
         return {"side": self.side, "passed": self.passed, "total": self.total,
-                "is_a_plus": self.is_a_plus, "failed": list(self.failed),
-                "quality": dict(self.quality), "label": self.label}
+                "rules_complete": self.rules_complete, "is_a_plus": self.is_a_plus,
+                "operational_evaluated": self.operational_evaluated,
+                "failed": list(self.failed), "quality": dict(self.quality),
+                "label": self.label, "stage": self.stage}
 
 
 def mandatory_for(side: str) -> Tuple[str, ...]:
@@ -58,10 +91,21 @@ def mandatory_for(side: str) -> Tuple[str, ...]:
 
 
 def score(side: str, checks: Mapping[str, object],
-          require_momentum_long: bool = False) -> Score:
+          require_momentum_long: bool = False,
+          operational: Mapping[str, object] | None = None) -> Score:
+    """Calcula el cumplimiento. `operational` son los gates que el motor de
+    estrategia no puede evaluar; sin ellos el resultado nunca es A+.
+
+    Un gate AUSENTE cuenta como fallido, no como aprobado: `checks.get(k) is
+    True` es deliberadamente estricto para que una clave que nadie escribio no
+    se cuele como verde.
+    """
     keys = list(mandatory_for(side))
     if side == "LONG" and require_momentum_long:
-        keys += ["rsi", "macd", "volume"]
+        # F2 son cuatro condiciones, no tres: la direccion del VWAP entra con
+        # las otras (PRD 5.5). Omitirla producia un "A+" al que le faltaba un
+        # cuarto del filtro.
+        keys += ["rsi", "macd", "volume", "vwap_slope"]
     passed = [k for k in keys if checks.get(k) is True]
     failed = tuple(k for k in keys if checks.get(k) is not True)
 
@@ -74,8 +118,23 @@ def score(side: str, checks: Mapping[str, object],
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             quality[k] = float(v)
 
+    rules_complete = (len(failed) == 0)
+
+    op_evaluated = operational is not None
+    op_failed: Tuple[str, ...] = ()
+    if op_evaluated:
+        op_failed = tuple(k for k in OPERATIONAL_GATES
+                          if operational.get(k) is not True)
+    else:
+        # Sin gates operativos evaluados no se puede afirmar A+. Se marcan como
+        # pendientes para que la razon aparezca en `failed` y en el journal.
+        op_failed = tuple(f"{k}:not_evaluated" for k in OPERATIONAL_GATES)
+
     return Score(side=side, passed=len(passed), total=len(keys),
-                 is_a_plus=(len(failed) == 0), failed=failed, quality=quality)
+                 rules_complete=rules_complete,
+                 is_a_plus=(rules_complete and op_evaluated and not op_failed),
+                 failed=failed + op_failed, quality=quality,
+                 operational_evaluated=op_evaluated)
 
 
 def assert_no_probability(payload: Mapping[str, object]) -> None:

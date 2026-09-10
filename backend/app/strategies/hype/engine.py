@@ -25,8 +25,8 @@ from ..indicators import Candle, atr_at, vwap_at
 from . import long as long_rules
 from . import short as short_rules
 from . import target_clearance
-from .common import (CHECKLIST_KEYS, SIDE_LONG, SIDE_SHORT, STATE_NO_SETUP,
-                     STATE_SIGNAL_READY, STATE_WAITING_CONFIRMATION, Config,
+from .common import (CHECKLIST_KEYS, SIDE_LONG, SIDE_SHORT, STATE_CANDIDATE,
+                     STATE_NO_SETUP, STATE_WAITING_CONFIRMATION, Config,
                      PolicyViolation, cost_fraction, resolve_side)
 from .scoring import Score, score
 
@@ -35,7 +35,8 @@ STRATEGY_ID = "hype_vwap_fvg_retest_v2"
 
 @dataclass(frozen=True)
 class Signal:
-    """Un setup A+ con sus niveles calculados. Sin cantidad todavia."""
+    """Un CANDIDATO con sus niveles calculados. Todavia no es A+ ni tiene
+    cantidad: falta pasar por risk/sizing.py y risk/limits.py."""
     side: str
     entry_ref: float
     stop: float
@@ -201,10 +202,17 @@ def scan(c4h: List[Candle], c1h: List[Candle], c5: List[Candle],
     if not checks["cost_gate"]:
         return ScanResult(None, "cost_gate", state, side, checks)
 
-    # 8) A+
+    # 8) cumplimiento de reglas.
+    #
+    # Esto NO declara A+. El motor no puede: A+ exige ademas sizing valido en
+    # el venue, limite diario disponible y kill switches limpios (PRD 14), y
+    # ninguna de las tres cosas es deducible de las velas. Lo que sale de aqui
+    # es un CANDIDATO; la app lo asciende a A_PLUS_READY tras pasar por
+    # risk/sizing.py y risk/limits.py. Ver scoring.Score.stage.
     sc = score(side, checks, require_momentum_long=cfg.require_momentum_long)
-    if not sc.is_a_plus:
-        return ScanResult(None, "not_a_plus:" + ",".join(sc.failed), state, side, checks)
+    if not sc.rules_complete:
+        return ScanResult(None, "rules_incomplete:" + ",".join(sc.failed),
+                          state, side, checks)
 
     if side == SIDE_SHORT and not cfg.allow_short:
         raise PolicyViolation(
@@ -218,4 +226,4 @@ def scan(c4h: List[Candle], c1h: List[Candle], c5: List[Candle],
                  clearance_r=float(checks["clearance_r"]), ts=c5[t].ts,
                  checklist=tuple(k for k in CHECKLIST_KEYS if checks.get(k) is True),
                  features=features, score=sc)
-    return ScanResult(sig, "ok", STATE_SIGNAL_READY, side, checks)
+    return ScanResult(sig, "rules_complete", STATE_CANDIDATE(side), side, checks)
