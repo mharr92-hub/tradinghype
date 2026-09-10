@@ -1,192 +1,188 @@
-// @version=6
+//@version=6
 // ─────────────────────────────────────────────────────────────────────────────
 // HYPE COPILOT TV v1 — visualizador de la estrategia HYPE Copilot
 //
-// QUÉ ES: el debugger visual del motor Python. Pinta EXACTAMENTE las mismas
-// condiciones que decide `backend/app/strategies/hype/engine.py`, para poder
-// ver por qué el backend aceptó o rechazó algo.
+// QUÉ ES: el debugger visual del motor Python. Pinta las mismas condiciones que
+// decide `backend/app/strategies/hype/engine.py`, para poder ver por qué el
+// backend aceptó o rechazó algo.
 //
-// QUÉ NO ES, y esto no es una formalidad:
+// QUÉ NO ES:
 //   · NO es la fuente de verdad. Python decide; esto dibuja (PRD 2, PRD 15).
 //   · NO ejecuta. Sus alertas NOTIFICAN; el backend revalida contra datos
 //     nativos de Hyperliquid antes de considerar nada (PRD 11).
-//   · NO lleva credenciales. Ninguna. El secreto compartido es un input
-//     aparte que viaja en el cuerpo del mensaje, no en este código.
+//   · NO lleva credenciales más allá del secreto compartido configurable.
 //
-// ⚠ SÍMBOLO: úsalo sobre el PERPETUO DE HYPERLIQUID. Si el feed es de otro
-//   exchange, el volumen, el VWAP y hasta los FVG son distintos de los que
-//   calcula el backend, y las señales divergirán EN SILENCIO. Esa divergencia
-//   es la razón por la que el backend revalida siempre.
+// ⚠ SÍMBOLO: úsalo sobre el PERPETUO DE HYPERLIQUID y en timeframe 5m. Si el
+//   feed es de otro exchange, el volumen, el VWAP y los FVG son distintos de
+//   los que calcula el backend y las señales divergirán EN SILENCIO.
 //
-// PARIDAD NUMÉRICA: donde Pine y Python difieren, se implementa la versión de
-// PYTHON a mano. Cada caso está comentado con el motivo. Sin esto, el gráfico
-// enseñaría una estrategia parecida pero distinta, que es peor que no enseñar
-// nada.
+// PARIDAD: donde Pine y Python difieren, se implementa la versión de PYTHON a
+// mano, con el motivo comentado. Sin eso el gráfico enseñaría una estrategia
+// parecida pero distinta, que es peor que no enseñar nada.
 // ─────────────────────────────────────────────────────────────────────────────
 
 indicator("HYPE COPILOT TV v1", overlay = true, max_boxes_count = 200,
           max_lines_count = 400, max_labels_count = 300)
 
 // ═════ INPUTS ════════════════════════════════════════════════════════════════
-grpS = "Estrategia (congelada — cambiar = brazo de investigación)"
-emaFast   = input.int(20,   "EMA rápida",            group = grpS)
-emaSlow   = input.int(50,   "EMA lenta",             group = grpS)
-slopeLb   = input.int(3,    "EMA50 vs hace N barras", group = grpS)
-atrLen    = input.int(20,   "ATR",                   group = grpS)
-bandAtr   = input.float(0.30, "Banda VWAP × ATR",    step = 0.05, group = grpS)
-gapMaxAge = input.int(12,   "Edad máx. del FVG",     group = grpS)
-confirmWin= input.int(3,    "Ventana de confirmación", group = grpS)
-stopBuf   = input.float(0.10, "Buffer del stop × ATR", step = 0.05, group = grpS)
-warmup    = input.int(12,   "Warmup de sesión",      group = grpS)
-rrTarget  = input.float(1.6, "Objetivo R (E2)",      step = 0.1, group = grpS)
+gS = "Estrategia (congelada — cambiarla = brazo de investigación)"
+emaFast   = input.int(20,     "EMA rápida",              group = gS)
+emaSlow   = input.int(50,     "EMA lenta",               group = gS)
+slopeLb   = input.int(3,      "EMA50 vs hace N barras",  group = gS)
+atrLen    = input.int(20,     "ATR",                     group = gS)
+bandAtr   = input.float(0.30, "Banda VWAP x ATR",        step = 0.05, group = gS)
+gapMaxAge = input.int(12,     "Edad máx. del FVG",       group = gS)
+confirmWin= input.int(3,      "Ventana de confirmación", group = gS)
+stopBuf   = input.float(0.10, "Buffer del stop x ATR",   step = 0.05, group = gS)
+warmupN   = input.int(12,     "Warmup de sesión",        group = gS)
+rrTarget  = input.float(1.6,  "Objetivo R (E2)",         step = 0.1,  group = gS)
 
-grpM = "Momentum — F2 en LONG (opcional), obligatorio en SHORT"
-useMomLong = input.bool(false, "Exigir momentum en LONG (brazo F2)", group = grpM)
-rsiLen     = input.int(14,    "RSI",                 group = grpM)
-rsiLMin    = input.float(50,  "RSI long mín",        group = grpM)
-rsiLMax    = input.float(68,  "RSI long máx",        group = grpM)
-rsiSMin    = input.float(32,  "RSI short mín",       group = grpM)
-rsiSMax    = input.float(48,  "RSI short máx",       group = grpM)
-volLen     = input.int(20,    "Media de volumen",    group = grpM)
-volMultL   = input.float(1.00, "Volumen × media (long)",  step = 0.05, group = grpM)
-volMultS   = input.float(1.20, "Volumen × media (short)", step = 0.05, group = grpM)
+gM = "Momentum — F2 en LONG (opcional), obligatorio en SHORT"
+useMomLong = input.bool(false, "Exigir momentum en LONG (F2)", group = gM)
+rsiLen     = input.int(14,     "RSI",                    group = gM)
+rsiLMin    = input.float(50,   "RSI long mín",           group = gM)
+rsiLMax    = input.float(68,   "RSI long máx",           group = gM)
+rsiSMin    = input.float(32,   "RSI short mín",          group = gM)
+rsiSMax    = input.float(48,   "RSI short máx",          group = gM)
+volLen     = input.int(20,     "Media de volumen",       group = gM)
+volMultL   = input.float(1.00, "Volumen x media (long)", step = 0.05, group = gM)
+volMultS   = input.float(1.20, "Volumen x media (short)",step = 0.05, group = gM)
 
-grpD = "Dirección"
-allowLong  = input.bool(true,  "LONG",                       group = grpD)
-allowShort = input.bool(true,  "SHORT (estricto)",           group = grpD)
-shortRsi4h = input.float(45,   "RSI 4H máx. para SHORT",     group = grpD)
+gD = "Dirección"
+allowLong  = input.bool(true,  "LONG",                   group = gD)
+allowShort = input.bool(true,  "SHORT (estricto)",       group = gD)
+shortRsi4h = input.float(45,   "RSI 4H máx. para SHORT", group = gD)
 
-grpC = "Target clearance"
-useClear  = input.bool(true, "Exigir espacio hasta el objetivo", group = grpC)
-pivotN    = input.int(2,     "Pivote 1H (n a cada lado)",       group = grpC)
-clearLb   = input.int(48,    "Lookback 1H",                     group = grpC)
-usePrevDay= input.bool(true, "Usar high/low del día previo",    group = grpC)
+gC = "Target clearance"
+useClear   = input.bool(true, "Exigir espacio hasta el objetivo", group = gC)
+pivotN     = input.int(2,     "Pivote 1H (n a cada lado)",       group = gC)
+clearLb    = input.int(48,    "Lookback de niveles",             group = gC)
+usePrevDay = input.bool(true, "Usar high/low del día previo",    group = gC)
 
-grpV = "Visual"
-showBoxes = input.bool(true, "Cajas de FVG",       group = grpV)
-showRs    = input.bool(true, "Líneas 1R/1.6R/2R",  group = grpV)
-showTable = input.bool(true, "Panel de estado",    group = grpV)
+gV = "Visual"
+showBoxes = input.bool(true, "Cajas de FVG",      group = gV)
+showRs    = input.bool(true, "Líneas 1R/1.6R/2R", group = gV)
+showTable = input.bool(true, "Panel de estado",   group = gV)
 
-grpA = "Alertas"
-strategyId = input.string("hype_vwap_fvg_retest_v2", "strategy_id", group = grpA)
-tvSecret   = input.string("", "Secreto compartido (va en el cuerpo)", group = grpA)
+gA = "Alertas"
+strategyId = input.string("hype_vwap_fvg_retest_v2", "strategy_id", group = gA)
+tvSecret   = input.string("", "Secreto compartido", group = gA)
 
-// ═════ AVISO DE TIMEFRAME ════════════════════════════════════════════════════
-// El motor decide sobre velas de 5m. En cualquier otro timeframe el gráfico
-// no representa lo que hace el backend.
-var bool tfOk = timeframe.period == "5"
+// ═════ FUNCIONES GLOBALES ════════════════════════════════════════════════════
+// Deben declararse en ámbito global: Pine no admite definirlas dentro de un if.
+
+// MACD replicado a mano porque `ta.macd()` devuelve una tupla y no se puede
+// indexar dentro de una expresión de request.security().
+f_macdHist(src, f, s, sig) =>
+    ln = ta.ema(src, f) - ta.ema(src, s)
+    ln - ta.ema(ln, sig)
+
+f_mark(b) => b ? "OK" : "-"
 
 // ═════ INDICADORES CON PARIDAD PYTHON ════════════════════════════════════════
 
 // ATR: Python usa MEDIA SIMPLE de True Range (`atr_at`), no la RMA de Wilder
 // que aplica `ta.atr()`. Son números distintos, y de este sale la banda de VWAP
-// que decide si un gap cuenta o no. Se replica la media simple.
+// que decide si un gap cuenta o no.
 atrPy = ta.sma(ta.tr(true), atrLen)
 
 // Media de volumen: Python (`avg_volume`) EXCLUYE la vela actual, para que
 // "volumen >= media" no se compare parcialmente contra sí mismo.
 volAvgPrev = ta.sma(volume, volLen)[1]
 
-// VWAP anclado a 00:00 UTC, no a la sesión del gráfico. `ta.vwap` por defecto
-// usa la sesión del símbolo, que en cripto puede no ser medianoche UTC.
-utcDay    = timestamp("UTC", year, month, dayofmonth, 0, 0, 0)
-newUtcDay = ta.change(utcDay) != 0
-vwapSes   = ta.vwap(hlc3, newUtcDay)
+// VWAP anclado a 00:00 UTC, no a la sesión del gráfico. Se detecta el cambio de
+// día en UTC explícitamente: `dayofmonth` sin timezone usaría la del exchange.
+utcDom     = dayofmonth(time, "UTC")
+newUtcDay  = na(utcDom[1]) or utcDom != utcDom[1]
+vwapSes    = ta.vwap(hlc3, newUtcDay)
 sessionBars = ta.barssince(newUtcDay) + 1
+warmupOk   = sessionBars > warmupN
 
 // ─── contexto HTF, anti-repintado ────────────────────────────────────────────
-// lookahead_off + [1]: se lee el valor de la barra HTF YA CERRADA. Sin el [1]
-// se estaría usando una barra 4H en curso, cuyos valores cambian hasta que
-// cierra — el repintado clásico de multi-timeframe.
-f_htf(tf, expr) => request.security(syminfo.tickerid, tf, expr[1],
-                                    lookahead = barmerge.lookahead_off)
-
-[c4, e4f, e4s, e4sPrev, rsi4] = request.security(
-     syminfo.tickerid, "240",
+// lookahead_off + [1]: se lee la barra HTF YA CERRADA. Sin el [1] se estaría
+// usando una barra 4H en curso, cuyos valores cambian hasta que cierra: el
+// repintado clásico de multi-timeframe.
+[c4, e4f, e4s, e4sPrev, rsi4] = request.security(syminfo.tickerid, "240",
      [close[1], ta.ema(close, emaFast)[1], ta.ema(close, emaSlow)[1],
       ta.ema(close, emaSlow)[1 + slopeLb], ta.rsi(close, rsiLen)[1]],
      lookahead = barmerge.lookahead_off)
 
-[c1, e1f, e1s, macdH1, macdH1p] = request.security(
-     syminfo.tickerid, "60",
+[c1, e1f, e1s, mh1, mh1p] = request.security(syminfo.tickerid, "60",
      [close[1], ta.ema(close, emaFast)[1], ta.ema(close, emaSlow)[1],
-      ta.macd(close, 12, 26, 9)[1][1], ta.macd(close, 12, 26, 9)[1][2]],
+      f_macdHist(close, 12, 26, 9)[1], f_macdHist(close, 12, 26, 9)[2]],
      lookahead = barmerge.lookahead_off)
 
+ph1 = request.security(syminfo.tickerid, "60",
+     ta.pivothigh(high, pivotN, pivotN), lookahead = barmerge.lookahead_off)
+pl1 = request.security(syminfo.tickerid, "60",
+     ta.pivotlow(low, pivotN, pivotN), lookahead = barmerge.lookahead_off)
+
 // ═════ RÉGIMEN Y ALINEACIÓN ══════════════════════════════════════════════════
-regimeLong  = allowLong  and c4 > e4f and e4f > e4s and e4s > e4sPrev
-// El SHORT es deliberadamente más difícil: además de EMAs bajistas exige el
-// HTF debilitado (RSI ≤ 45). No es simetría del long (PRD 6, AUDIT C-11).
-regimeShort = allowShort and c4 < e4f and e4f < e4s and e4s < e4sPrev
-              and not na(rsi4) and rsi4 <= shortRsi4h
+regimeLong  = allowLong and c4 > e4f and e4f > e4s and e4s > e4sPrev
+// El SHORT es deliberadamente más difícil: además de EMAs bajistas exige el HTF
+// debilitado (RSI <= 45). No es simetría del long (PRD 6, AUDIT C-11).
+regimeShort = allowShort and c4 < e4f and e4f < e4s and e4s < e4sPrev and not na(rsi4) and rsi4 <= shortRsi4h
 
 alignLong  = c1 > e1f and e1f > e1s
-// SHORT 1H: además MACD hist < 0 Y descendiendo.
-alignShort = c1 < e1f and e1f < e1s and macdH1 < 0 and macdH1 < macdH1p
+alignShort = c1 < e1f and e1f < e1s and mh1 < 0 and mh1 < mh1p
 
-longCtx  = regimeLong  and alignLong
+longCtx  = regimeLong and alignLong
 shortCtx = regimeShort and alignShort
 
 // ═════ MOMENTUM ══════════════════════════════════════════════════════════════
-rsi5   = ta.rsi(close, rsiLen)
-[, , mh] = ta.macd(close, 12, 26, 9)
+rsi5     = ta.rsi(close, rsiLen)
+mh5      = f_macdHist(close, 12, 26, 9)
 vwapUp   = vwapSes > vwapSes[1]
 vwapDown = vwapSes < vwapSes[1]
 
-momLongOk  = rsi5 >= rsiLMin and rsi5 <= rsiLMax and rsi5 > rsi5[1]
-             and mh > mh[1] and mh[1] > mh[2]
-             and volume >= volMultL * volAvgPrev
-             and vwapUp
+momLongOk  = rsi5 >= rsiLMin and rsi5 <= rsiLMax and rsi5 > rsi5[1] and mh5 > mh5[1] and mh5[1] > mh5[2] and volume >= volMultL * volAvgPrev and vwapUp
 // En SHORT el momentum NO es opcional: forma parte de la definición del setup.
-momShortOk = rsi5 >= rsiSMin and rsi5 <= rsiSMax and rsi5 < rsi5[1]
-             and mh < mh[1] and mh[1] < mh[2]
-             and volume >= volMultS * volAvgPrev
-             and vwapDown
+momShortOk = rsi5 >= rsiSMin and rsi5 <= rsiSMax and rsi5 < rsi5[1] and mh5 < mh5[1] and mh5[1] < mh5[2] and volume >= volMultS * volAvgPrev and vwapDown
 
 // ═════ CICLO DE VIDA DEL FVG ═════════════════════════════════════════════════
-// Estado persistente con `var`. Todo se actualiza SOLO en barra confirmada
-// (`barstate.isconfirmed`): en tiempo real Pine reevalúa la barra en curso
-// muchas veces, y sin esa guarda el estado se corrompería y el histórico
-// mostraría un ciclo de vida que nunca ocurrió.
-var float gLo    = na      // límite inferior de la zona
-var float gHi    = na      // límite superior
-var int   gDir   = 0       // 1 = alcista, -1 = bajista
-var int   gBar   = na      // barra de formación
-var bool  gTouch = false   // ¿hubo ya primer retest?
+// Estado persistente con `var`, actualizado SOLO en barra confirmada. En tiempo
+// real Pine reevalúa la barra en curso muchas veces; sin esa guarda el estado
+// se corrompería y el histórico mostraría un ciclo que nunca ocurrió.
+var float gLo    = na
+var float gHi    = na
+var int   gDir   = 0
+var int   gBar   = na
+var bool  gTouch = false
 var int   gTouchBar = na
-var bool  gDead  = false   // consumido: no revive JAMÁS
+var bool  gDead  = false
 var box   gBox   = na
 
-warmupOk = sessionBars > warmup
-newSession = newUtcDay
+if newUtcDay
+    gLo := na
+    gHi := na
+    gDir := 0
+    gDead := false
+    gTouch := false
 
-if newSession
-    gLo := na, gHi := na, gDir := 0, gDead := false, gTouch := false
-
-// Detección: FVG de 3 velas sobre barras CERRADAS.
 bullGap = low > high[2]
 bearGap = high < low[2]
 
 if barstate.isconfirmed and warmupOk and na(gLo) and not gDead
     if bullGap and longCtx
-        gLo := high[2], gHi := low, gDir := 1, gBar := bar_index
+        gLo := high[2]
+        gHi := low
+        gDir := 1
+        gBar := bar_index
         gTouch := false
         if showBoxes
-            gBox := box.new(bar_index - 2, gHi, bar_index, gLo,
-                 border_color = color.new(color.teal, 40),
-                 bgcolor = color.new(color.teal, 88))
+            gBox := box.new(bar_index - 2, gHi, bar_index, gLo, border_color = color.new(color.teal, 40), bgcolor = color.new(color.teal, 88))
     else if bearGap and shortCtx
-        gLo := high, gHi := low[2], gDir := -1, gBar := bar_index
+        gLo := high
+        gHi := low[2]
+        gDir := -1
+        gBar := bar_index
         gTouch := false
         if showBoxes
-            gBox := box.new(bar_index - 2, gHi, bar_index, gLo,
-                 border_color = color.new(color.red, 40),
-                 bgcolor = color.new(color.red, 88))
+            gBox := box.new(bar_index - 2, gHi, bar_index, gLo, border_color = color.new(color.red, 40), bgcolor = color.new(color.red, 88))
 
-// Invalidación: cierre a través del lado LEJANO. Terminal.
+// Invalidación: cierre a través del lado LEJANO. Terminal, no revive nunca.
 invalidated = not na(gLo) and ((gDir == 1 and close < gLo) or (gDir == -1 and close > gHi))
 
-// Primer toque, con la zona solapando la banda de VWAP.
 bandUp = vwapSes + bandAtr * atrPy
 bandDn = vwapSes - bandAtr * atrPy
 overlapsBand = not na(gLo) and gLo <= bandUp and gHi >= bandDn
@@ -197,34 +193,30 @@ if barstate.isconfirmed and not na(gLo) and not gDead
         gDead := true
         if showBoxes and not na(gBox)
             box.set_bgcolor(gBox, color.new(color.gray, 92))
-            box.set_border_color(gBox, color.new(color.gray, 60))
     else if not gTouch and touching
         if (bar_index - gBar) > gapMaxAge or not overlapsBand
-            gDead := true                      // viejo o lejos del VWAP
+            gDead := true
             if showBoxes and not na(gBox)
                 box.set_bgcolor(gBox, color.new(color.gray, 92))
         else
             gTouch := true
             gTouchBar := bar_index
     else if gTouch and (bar_index - gTouchBar) > confirmWin - 1
-        gDead := true                          // el primer retest falló
+        gDead := true
         if showBoxes and not na(gBox)
             box.set_bgcolor(gBox, color.new(color.gray, 92))
 
 // ═════ CONFIRMACIÓN ══════════════════════════════════════════════════════════
 inWindow = gTouch and not gDead and (bar_index - gTouchBar) <= confirmWin - 1
 
-confLong  = inWindow and gDir == 1 and longCtx
-            and close > math.max(gHi, vwapSes) and close > high[1] and close > open
-            and (not useMomLong or momLongOk)
-confShort = inWindow and gDir == -1 and shortCtx
-            and close < math.min(gLo, vwapSes) and close < low[1] and close < open
-            and momShortOk
+confLong  = inWindow and gDir == 1 and longCtx and close > math.max(gHi, vwapSes) and close > high[1] and close > open and (not useMomLong or momLongOk)
+confShort = inWindow and gDir == -1 and shortCtx and close < math.min(gLo, vwapSes) and close < low[1] and close < open and momShortOk
 
 // ═════ NIVELES ═══════════════════════════════════════════════════════════════
 // Estructura PRIMERO; el objetivo se deriva después. El stop no depende de rr.
-segLow  = gTouch ? ta.lowest(low,  math.max(1, bar_index - gTouchBar + 1)) : na
-segHigh = gTouch ? ta.highest(high, math.max(1, bar_index - gTouchBar + 1)) : na
+segLen  = gTouch ? math.max(1, bar_index - gTouchBar + 1) : 1
+segLow  = ta.lowest(low, segLen)
+segHigh = ta.highest(high, segLen)
 
 stopLong  = math.min(nz(segLow, gLo), gLo) - stopBuf * atrPy
 stopShort = math.max(nz(segHigh, gHi), gHi) + stopBuf * atrPy
@@ -234,206 +226,177 @@ rLong   = entryPx - stopLong
 rShort  = stopShort - entryPx
 
 // ═════ TARGET CLEARANCE ══════════════════════════════════════════════════════
-// Pivotes 1H CONFIRMADOS. `ta.pivothigh` ya incorpora el retardo de n barras:
-// el valor aparece n barras DESPUÉS del pivote, que es justo cuando se pudo
-// saber que lo era. Python usa comparación ESTRICTA por el mismo motivo, para
-// que un tramo lateral no genere un pivote en cada barra.
-ph1 = request.security(syminfo.tickerid, "60", ta.pivothigh(high, pivotN, pivotN),
-                       lookahead = barmerge.lookahead_off)
-pl1 = request.security(syminfo.tickerid, "60", ta.pivotlow(low, pivotN, pivotN),
-                       lookahead = barmerge.lookahead_off)
-
+// `ta.pivothigh` ya incorpora el retardo de n barras: el valor aparece n barras
+// DESPUÉS del pivote, justo cuando se pudo saber que lo era. Python usa
+// comparación estricta por el mismo motivo, para que un tramo lateral no genere
+// un pivote en cada barra.
 var array<float> swHi = array.new_float()
 var array<float> swLo = array.new_float()
-if barstate.isconfirmed
-    if not na(ph1)
-        array.push(swHi, ph1)
-        if array.size(swHi) > clearLb
-            array.shift(swHi)
-    if not na(pl1)
-        array.push(swLo, pl1)
-        if array.size(swLo) > clearLb
-            array.shift(swLo)
 
-// High/low del día previo, mismo reset que el VWAP.
-var float pdHigh = na
-var float pdLow  = na
+if barstate.isconfirmed and not na(ph1)
+    array.push(swHi, ph1)
+    if array.size(swHi) > clearLb
+        array.shift(swHi)
+if barstate.isconfirmed and not na(pl1)
+    array.push(swLo, pl1)
+    if array.size(swLo) > clearLb
+        array.shift(swLo)
+
+var float pdHigh  = na
+var float pdLow   = na
 var float curHigh = na
 var float curLow  = na
-if newSession
-    pdHigh := curHigh, pdLow := curLow
-    curHigh := high,   curLow := low
+if newUtcDay
+    pdHigh := curHigh
+    pdLow := curLow
+    curHigh := high
+    curLow := low
 else
     curHigh := math.max(nz(curHigh, high), high)
-    curLow  := math.min(nz(curLow,  low),  low)
+    curLow := math.min(nz(curLow, low), low)
 
 f_nearestAbove(arr, px) =>
     float best = na
-    for i = 0 to (array.size(arr) > 0 ? array.size(arr) - 1 : 0)
-        v = array.size(arr) > 0 ? array.get(arr, i) : na
-        if not na(v) and v > px and (na(best) or v < best)
-            best := v
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            v = array.get(arr, i)
+            if not na(v) and v > px and (na(best) or v < best)
+                best := v
     best
 
 f_nearestBelow(arr, px) =>
     float best = na
-    for i = 0 to (array.size(arr) > 0 ? array.size(arr) - 1 : 0)
-        v = array.size(arr) > 0 ? array.get(arr, i) : na
-        if not na(v) and v < px and (na(best) or v > best)
-            best := v
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            v = array.get(arr, i)
+            if not na(v) and v < px and (na(best) or v > best)
+                best := v
     best
 
 blockLong  = f_nearestAbove(swHi, entryPx)
 blockShort = f_nearestBelow(swLo, entryPx)
-if usePrevDay and not na(pdHigh) and pdHigh > entryPx
-    blockLong := na(blockLong) ? pdHigh : math.min(blockLong, pdHigh)
-if usePrevDay and not na(pdLow) and pdLow < entryPx
-    blockShort := na(blockShort) ? pdLow : math.max(blockShort, pdLow)
+blockLongF  = usePrevDay and not na(pdHigh) and pdHigh > entryPx ? (na(blockLong) ? pdHigh : math.min(blockLong, pdHigh)) : blockLong
+blockShortF = usePrevDay and not na(pdLow) and pdLow < entryPx ? (na(blockShort) ? pdLow : math.max(blockShort, pdLow)) : blockShort
 
-clearLongR  = na(blockLong)  or rLong  <= 0 ? 999.0 : (blockLong - entryPx) / rLong
-clearShortR = na(blockShort) or rShort <= 0 ? 999.0 : (entryPx - blockShort) / rShort
+clearLongR  = na(blockLongF)  or rLong  <= 0 ? 999.0 : (blockLongF - entryPx) / rLong
+clearShortR = na(blockShortF) or rShort <= 0 ? 999.0 : (entryPx - blockShortF) / rShort
 
 // Fail-closed: sin histórico suficiente NO se aprueba. "No he podido mirar" y
 // "no hay obstáculo" no son lo mismo (AUDIT R03-02).
-clearDataOk = not useClear or (array.size(swHi) + array.size(swLo) > 0)
-clearLongOk  = not useClear or (clearDataOk and clearLongR  >= rrTarget)
+clearDataOk  = not useClear or (array.size(swHi) + array.size(swLo) > 0)
+clearLongOk  = not useClear or (clearDataOk and clearLongR >= rrTarget)
 clearShortOk = not useClear or (clearDataOk and clearShortR >= rrTarget)
 
 // ═════ SEÑAL ═════════════════════════════════════════════════════════════════
+tfOk = timeframe.period == "5"
 sigLong  = tfOk and confLong  and rLong  > 0 and clearLongOk  and barstate.isconfirmed
 sigShort = tfOk and confShort and rShort > 0 and clearShortOk and barstate.isconfirmed
 
 // El gap se consume al confirmar: primer retest ÚNICO.
 if barstate.isconfirmed and (sigLong or sigShort)
     gDead := true
-    if showBoxes and not na(gBox)
-        box.set_bgcolor(gBox, color.new(gDir == 1 ? color.teal : color.red, 78))
 
 // ═════ DIBUJO ════════════════════════════════════════════════════════════════
 plot(vwapSes, "VWAP sesión", color.new(color.orange, 0), 2)
-plot(bandUp,  "VWAP + kATR", color.new(color.orange, 70), 1)
-plot(bandDn,  "VWAP − kATR", color.new(color.orange, 70), 1)
-plot(f_htf("240", ta.ema(close, emaFast)), "EMA20 4H", color.new(color.blue, 30), 2)
-plot(f_htf("240", ta.ema(close, emaSlow)), "EMA50 4H", color.new(color.navy, 30), 2)
-plot(f_htf("60",  ta.ema(close, emaFast)), "EMA20 1H", color.new(color.purple, 55), 1)
-plot(f_htf("60",  ta.ema(close, emaSlow)), "EMA50 1H", color.new(color.fuchsia, 65), 1)
+plot(bandUp, "VWAP + kATR", color.new(color.orange, 70), 1)
+plot(bandDn, "VWAP - kATR", color.new(color.orange, 70), 1)
+plot(e4f, "EMA20 4H", color.new(color.blue, 30), 2)
+plot(e4s, "EMA50 4H", color.new(color.navy, 30), 2)
+plot(e1f, "EMA20 1H", color.new(color.purple, 55), 1)
+plot(e1s, "EMA50 1H", color.new(color.fuchsia, 65), 1)
 
 plotshape(gTouch and bar_index == gTouchBar, "Primer retest", shape.circle,
-          location.absolute, color.new(color.yellow, 20), size = size.tiny)
-
-plotshape(sigLong,  "LONG READY",  shape.labelup,   location.belowbar,
-          color.new(color.teal, 0), text = "LONG", textcolor = color.white,
-          size = size.small)
+          location.belowbar, color.new(color.yellow, 20), size = size.tiny)
+plotshape(sigLong, "LONG READY", shape.labelup, location.belowbar,
+          color.new(color.teal, 0), text = "LONG", textcolor = color.white, size = size.small)
 plotshape(sigShort, "SHORT READY", shape.labeldown, location.abovebar,
-          color.new(color.red, 0),  text = "SHORT", textcolor = color.white,
-          size = size.small)
+          color.new(color.red, 0), text = "SHORT", textcolor = color.white, size = size.small)
 
-// Entry / SL / 1R / 1.6R / 2R
 if showRs and (sigLong or sigShort)
     dir   = sigLong ? 1 : -1
-    r     = sigLong ? rLong : rShort
+    rr    = sigLong ? rLong : rShort
     stopP = sigLong ? stopLong : stopShort
-    line.new(bar_index, entryPx, bar_index + 40, entryPx, color = color.white,
-             width = 2, style = line.style_solid)
-    line.new(bar_index, stopP, bar_index + 40, stopP, color = color.red,
-             width = 2, style = line.style_solid)
-    for m in array.from(1.0, rrTarget, 2.0)
-        lvl = entryPx + dir * m * r
-        line.new(bar_index, lvl, bar_index + 40, lvl,
-                 color = m == rrTarget ? color.new(color.lime, 0)
-                                       : color.new(color.gray, 45),
-                 width = m == rrTarget ? 2 : 1, style = line.style_dashed)
-        label.new(bar_index + 40, lvl, str.tostring(m, "#.##") + "R",
-                  style = label.style_label_left, size = size.tiny,
-                  color = color.new(color.black, 100),
-                  textcolor = m == rrTarget ? color.lime : color.gray)
-    blk = sigLong ? blockLong : blockShort
+    line.new(bar_index, entryPx, bar_index + 40, entryPx, color = color.white, width = 2)
+    line.new(bar_index, stopP, bar_index + 40, stopP, color = color.red, width = 2)
+    m1 = entryPx + dir * 1.0 * rr
+    m2 = entryPx + dir * rrTarget * rr
+    m3 = entryPx + dir * 2.0 * rr
+    line.new(bar_index, m1, bar_index + 40, m1, color = color.new(color.gray, 45), style = line.style_dashed)
+    line.new(bar_index, m2, bar_index + 40, m2, color = color.new(color.lime, 0), width = 2, style = line.style_dashed)
+    line.new(bar_index, m3, bar_index + 40, m3, color = color.new(color.gray, 45), style = line.style_dashed)
+    label.new(bar_index + 40, m1, "1R", style = label.style_label_left, size = size.tiny, color = color.new(color.black, 100), textcolor = color.gray)
+    label.new(bar_index + 40, m2, str.tostring(rrTarget, "#.##") + "R", style = label.style_label_left, size = size.tiny, color = color.new(color.black, 100), textcolor = color.lime)
+    label.new(bar_index + 40, m3, "2R", style = label.style_label_left, size = size.tiny, color = color.new(color.black, 100), textcolor = color.gray)
+    blk = sigLong ? blockLongF : blockShortF
     if not na(blk)
-        line.new(bar_index - 30, blk, bar_index + 40, blk,
-                 color = color.new(color.orange, 20), width = 1,
-                 style = line.style_dotted)
+        line.new(bar_index - 30, blk, bar_index + 40, blk, color = color.new(color.orange, 20), style = line.style_dotted)
 
 // ═════ PANEL DE ESTADO ═══════════════════════════════════════════════════════
 // Muestra QUÉ está esperando el sistema, no solo que no hay señal.
-f_mark(b) => b ? "✓" : "·"
+var table t = table.new(position.top_right, 2, 12, border_width = 1,
+                        frame_width = 1, frame_color = color.new(color.gray, 60))
 
 if showTable and barstate.islast
-    var table t = table.new(position.top_right, 2, 12,
-                            border_width = 1, frame_width = 1,
-                            frame_color = color.new(color.gray, 60))
-    f_row(i, k, v, col) =>
-        table.cell(t, 0, i, k, text_color = color.gray, text_size = size.tiny,
-                   text_halign = text.align_left)
-        table.cell(t, 1, i, v, text_color = col, text_size = size.tiny,
-                   text_halign = text.align_right)
+    regTxt = regimeLong ? "ALCISTA" : regimeShort ? "BAJISTA" : "NEUTRAL"
+    regCol = regimeLong ? color.teal : regimeShort ? color.red : color.gray
+    aliTxt = alignLong ? "LONG" : alignShort ? "SHORT" : "-"
+    fvgTxt = na(gLo) ? "ninguno" : gDead ? "consumido" : str.tostring(gLo, format.mintick) + "-" + str.tostring(gHi, format.mintick)
+    stTxt  = sigLong ? "LONG READY" : sigShort ? "SHORT READY" : gTouch and not gDead ? "esperando confirmacion" : not na(gLo) and not gDead ? "esperando retest" : longCtx or shortCtx ? "sin setup" : "sin regimen"
+    stCol  = sigLong ? color.teal : sigShort ? color.red : color.gray
 
-    table.cell(t, 0, 0, "HYPE COPILOT v1", text_color = color.white,
-               text_size = size.small)
-    table.cell(t, 1, 0, tfOk ? "5m ✓" : "⚠ usa 5m",
-               text_color = tfOk ? color.teal : color.red, text_size = size.small)
-    f_row(1, "Régimen 4H", regimeLong ? "ALCISTA" : regimeShort ? "BAJISTA" : "NEUTRAL",
-          regimeLong ? color.teal : regimeShort ? color.red : color.gray)
-    f_row(2, "Alineación 1H", alignLong ? "LONG" : alignShort ? "SHORT" : "—",
-          alignLong ? color.teal : alignShort ? color.red : color.gray)
-    f_row(3, "VWAP", close > vwapSes ? "ENCIMA" : "DEBAJO",
-          close > vwapSes ? color.teal : color.red)
-    f_row(4, "FVG", na(gLo) ? "ninguno" : gDead ? "consumido"
-          : str.tostring(gLo, format.mintick) + "–" + str.tostring(gHi, format.mintick),
-          na(gLo) or gDead ? color.gray : color.yellow)
-    f_row(5, "Primer retest", gTouch and not gDead ? "SÍ" : "—",
-          gTouch and not gDead ? color.yellow : color.gray)
-    f_row(6, "RSI/MACD/Vol",
-          f_mark(rsi5 >= rsiLMin and rsi5 <= rsiLMax) + f_mark(mh > mh[1])
-          + f_mark(volume >= volAvgPrev), color.gray)
-    f_row(7, "Clearance L/S",
-          str.tostring(math.min(clearLongR, 99), "#.#") + "R / "
-          + str.tostring(math.min(clearShortR, 99), "#.#") + "R", color.gray)
-    f_row(8, "Sesión", str.tostring(sessionBars) + " velas"
-          + (warmupOk ? "" : " (warmup)"), warmupOk ? color.gray : color.orange)
-    f_row(9, "Estado",
-          sigLong ? "LONG READY" : sigShort ? "SHORT READY"
-          : gTouch and not gDead ? "esperando confirmación"
-          : not na(gLo) and not gDead ? "esperando retest"
-          : longCtx or shortCtx ? "sin setup" : "sin régimen",
-          sigLong ? color.teal : sigShort ? color.red : color.gray)
-    f_row(10, "Fuente de verdad", "Python", color.gray)
-    f_row(11, "Ejecución", "NO ejecuta", color.orange)
+    table.cell(t, 0, 0, "HYPE COPILOT v1", text_color = color.white, text_size = size.small)
+    table.cell(t, 1, 0, tfOk ? "5m OK" : "usa 5m", text_color = tfOk ? color.teal : color.red, text_size = size.small)
+    table.cell(t, 0, 1, "Regimen 4H", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 1, regTxt, text_color = regCol, text_size = size.tiny)
+    table.cell(t, 0, 2, "Alineacion 1H", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 2, aliTxt, text_color = alignLong ? color.teal : alignShort ? color.red : color.gray, text_size = size.tiny)
+    table.cell(t, 0, 3, "VWAP", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 3, close > vwapSes ? "ENCIMA" : "DEBAJO", text_color = close > vwapSes ? color.teal : color.red, text_size = size.tiny)
+    table.cell(t, 0, 4, "FVG", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 4, fvgTxt, text_color = na(gLo) or gDead ? color.gray : color.yellow, text_size = size.tiny)
+    table.cell(t, 0, 5, "Primer retest", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 5, gTouch and not gDead ? "SI" : "-", text_color = gTouch and not gDead ? color.yellow : color.gray, text_size = size.tiny)
+    table.cell(t, 0, 6, "RSI/MACD/Vol", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 6, f_mark(rsi5 >= rsiLMin and rsi5 <= rsiLMax) + " " + f_mark(mh5 > mh5[1]) + " " + f_mark(volume >= volAvgPrev), text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 0, 7, "Clearance L/S", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 7, str.tostring(math.min(clearLongR, 99), "#.#") + " / " + str.tostring(math.min(clearShortR, 99), "#.#"), text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 0, 8, "Sesion", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 8, str.tostring(sessionBars) + (warmupOk ? "" : " warmup"), text_color = warmupOk ? color.gray : color.orange, text_size = size.tiny)
+    table.cell(t, 0, 9, "Estado", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 9, stTxt, text_color = stCol, text_size = size.tiny)
+    table.cell(t, 0, 10, "Fuente de verdad", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 10, "Python", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 0, 11, "Ejecucion", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 11, "NO ejecuta", text_color = color.orange, text_size = size.tiny)
 
 // ═════ ALERTAS ═══════════════════════════════════════════════════════════════
-// Una sola vez por cierre de vela. El mensaje es JSON y NO lleva credenciales
-// más allá del secreto compartido que el usuario configure.
+// Una sola vez por cierre de vela. El backend REVALIDA: esto solo notifica.
 f_json(side, entryV, stopV, rV, clearR, blockV) =>
     tp = side == "LONG" ? entryV + rrTarget * rV : entryV - rrTarget * rV
-    '{"strategy_id":"' + strategyId + '"' +
-    ',"secret":"' + tvSecret + '"' +
-    ',"symbol":"' + syminfo.ticker + '"' +
-    ',"exchange":"' + syminfo.prefix + '"' +
-    ',"side":"' + side + '"' +
-    ',"tv_version":"v1"' +
-    ',"bar_time":' + str.tostring(time) +
-    ',"bar_close_time":' + str.tostring(time_close) +
-    ',"entry_reference":' + str.tostring(entryV, "#.##########") +
-    ',"stop_reference":'  + str.tostring(stopV,  "#.##########") +
-    ',"tp_reference":'    + str.tostring(tp,     "#.##########") +
-    ',"rr":' + str.tostring(rrTarget, "#.##") +
-    ',"fvg_low":'  + str.tostring(gLo, "#.##########") +
-    ',"fvg_high":' + str.tostring(gHi, "#.##########") +
-    ',"vwap":' + str.tostring(vwapSes, "#.##########") +
-    ',"atr":'  + str.tostring(atrPy,   "#.##########") +
-    ',"rsi":'  + str.tostring(rsi5,    "#.####") +
-    ',"macd_hist":' + str.tostring(mh, "#.##########") +
-    ',"volume_ratio":' + str.tostring(volume / volAvgPrev, "#.####") +
-    ',"clearance_r":' + str.tostring(math.min(clearR, 999), "#.####") +
-    ',"clearance_level":' + (na(blockV) ? "null" : str.tostring(blockV, "#.##########")) +
-    ',"session_bars":' + str.tostring(sessionBars) +
-    '}'
+    '{"strategy_id":"' + strategyId + '","secret":"' + tvSecret +
+      '","symbol":"' + syminfo.ticker + '","exchange":"' + syminfo.prefix +
+      '","side":"' + side + '","tv_version":"v1"' +
+      ',"bar_time":' + str.tostring(time) +
+      ',"bar_close_time":' + str.tostring(time_close) +
+      ',"entry_reference":' + str.tostring(entryV) +
+      ',"stop_reference":' + str.tostring(stopV) +
+      ',"tp_reference":' + str.tostring(tp) +
+      ',"rr":' + str.tostring(rrTarget) +
+      ',"fvg_low":' + str.tostring(gLo) +
+      ',"fvg_high":' + str.tostring(gHi) +
+      ',"vwap":' + str.tostring(vwapSes) +
+      ',"atr":' + str.tostring(atrPy) +
+      ',"rsi":' + str.tostring(rsi5) +
+      ',"macd_hist":' + str.tostring(mh5) +
+      ',"volume_ratio":' + str.tostring(volume / volAvgPrev) +
+      ',"clearance_r":' + str.tostring(math.min(clearR, 999)) +
+      ',"clearance_level":' + (na(blockV) ? "null" : str.tostring(blockV)) +
+      ',"session_bars":' + str.tostring(sessionBars) + '}'
 
 if sigLong
-    alert(f_json("LONG", entryPx, stopLong, rLong, clearLongR, blockLong),
-          alert.freq_once_per_bar_close)
+    alert(f_json("LONG", entryPx, stopLong, rLong, clearLongR, blockLongF), alert.freq_once_per_bar_close)
 if sigShort
-    alert(f_json("SHORT", entryPx, stopShort, rShort, clearShortR, blockShort),
-          alert.freq_once_per_bar_close)
+    alert(f_json("SHORT", entryPx, stopShort, rShort, clearShortR, blockShortF), alert.freq_once_per_bar_close)
 
-alertcondition(sigLong,  "HYPE LONG READY",  "HYPE Copilot: candidato LONG")
+alertcondition(sigLong, "HYPE LONG READY", "HYPE Copilot: candidato LONG")
 alertcondition(sigShort, "HYPE SHORT READY", "HYPE Copilot: candidato SHORT")
