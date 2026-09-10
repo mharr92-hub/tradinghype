@@ -45,6 +45,13 @@ def swing_levels_1h(c1h: Sequence[Candle], side: str, cfg: Config) -> List[Level
     (soporte). Un pivote en i necesita n barras a cada lado ya cerradas, asi
     que el rango util termina en len-1-n: las ultimas n barras aun no pueden
     confirmar nada. Eso es correcto, no una limitacion.
+
+    COMPARACION ESTRICTA, y no es un detalle. Con `<=`, un tramo lateral en el
+    que varias barras comparten el mismo maximo convierte a TODAS en pivote:
+    el detector se llena de niveles inventados justo donde el precio no hizo
+    nada. Ademas `ta.pivothigh()` de TradingView exige estrictamente mayor, y
+    el indicador tiene que pintar los mismos niveles que el backend rechaza
+    (PRD 15) o la pantalla y el motor contarian historias distintas.
     """
     n = cfg.clearance_pivot_n
     out: List[Level] = []
@@ -54,11 +61,11 @@ def swing_levels_1h(c1h: Sequence[Candle], side: str, cfg: Config) -> List[Level
     for i in range(start, len(c1h) - n):
         if side == SIDE_LONG:
             piv = c1h[i].h
-            if all(c1h[j].h <= piv for j in range(i - n, i + n + 1) if j != i):
+            if all(c1h[j].h < piv for j in range(i - n, i + n + 1) if j != i):
                 out.append(Level(piv, "swing_1h", c1h[i].ts))
         else:
             piv = c1h[i].l
-            if all(c1h[j].l >= piv for j in range(i - n, i + n + 1) if j != i):
+            if all(c1h[j].l > piv for j in range(i - n, i + n + 1) if j != i):
                 out.append(Level(piv, "swing_1h", c1h[i].ts))
     return out
 
@@ -182,4 +189,11 @@ def check(c1h: Sequence[Candle], c5: Sequence[Candle], t: int, side: str,
     levels = collect_levels(c1h, c5, t, side, cfg)
     blocking = first_blocking_level(levels, entry, side)
     cr = clearance_r(entry, stop, blocking, side)
-    return cr >= cfg.rr, cr, blocking
+
+    # Tolerancia relativa minuscula. `101.6 - 100.0` da 1.5999999999999943 en
+    # binario, y sin esto un clearance de exactamente 1.6R quedaria rechazado
+    # por ruido de representacion. El umbral lo fija la especificacion, no el
+    # error de coma flotante — y el sesgo debe ser hacia respetar el umbral
+    # declarado, no hacia endurecerlo en silencio.
+    eps = 1e-9 * max(1.0, abs(cfg.rr))
+    return cr >= cfg.rr - eps, cr, blocking
