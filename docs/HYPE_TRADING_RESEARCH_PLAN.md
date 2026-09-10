@@ -112,7 +112,14 @@ Se exige **meseta**: ≥ 70 % de las combinaciones de la rejilla con PF `> 1.1`.
 
 ### 2.5 Costos base
 
-Taker 4.5 bps/lado (**confirmar el tier real de la cuenta antes de reportar nada**), spread+slippage estimados 4 bps ida+vuelta, y **funding por hora de tenencia real**. Hyperliquid liquida funding horariamente: verificar contra la API antes de fijar el modelo. Con funding positivo el largo **paga** y el corto **cobra**; con tenencias de hasta 24 h esto ya no es ruido y se modela con su signo.
+Taker 4.5 bps/lado (**confirmar el tier real de la cuenta antes de reportar nada**), spread+slippage estimados 4 bps ida+vuelta, y **funding por hora de tenencia real**. Hyperliquid liquida funding horariamente: verificado contra la API el 2026-09-09. Con funding positivo el largo **paga** y el corto **cobra**; con tenencias de hasta 24 h esto ya no es ruido y se modela con su signo.
+
+> **Medición del 2026-09-09 — corrige un supuesto de la v0.1.** El plan anterior afirmaba: *"con funding positivo el largo PAGA — en HYPE alcista suele ser positivo, es viento en contra"*. La lectura real de `metaAndAssetCtxs` da **−0.00000573/h ≈ −5.0 % anualizado**: el funding está **negativo**, es decir, ahora mismo los largos **cobran** y los cortos **pagan**.
+>
+> Consecuencias que no son cosméticas:
+> 1. El cost gate de la rama LONG es **más permisivo** de lo que suponía el plan, y el de la SHORT **más estricto** — justo al revés de lo asumido.
+> 2. Un funding persistentemente negativo es información de mercado por sí misma: indica presión corta pagando por mantenerse. Conviene registrarlo como feature del journal desde el día uno (§19 del PRD ya lo lista).
+> 3. **Una sola lectura no es una serie.** El signo puede invertirse. Esto no autoriza a asumir viento a favor: obliga a descargar `fundingHistory` completo y a modelar el funding con su signo real hora a hora, nunca con una constante. Es exactamente la razón por la que C-04 lo hizo obligatorio.
 
 ---
 
