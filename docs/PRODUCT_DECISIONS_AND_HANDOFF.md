@@ -1,17 +1,21 @@
 # HYPE Copilot — decisiones de Mark y coordinación propuesta
 
-Actualizado: 2026-09-09. Entrevista de producto en curso. Este registro conserva las decisiones explícitas del usuario; no es una certificación del sistema ni una promoción a LIVE.
+Actualizado: 2026-09-09, tras el historial compartido por Mark. Este registro conserva las decisiones explícitas del usuario; no es una certificación del sistema ni una promoción a LIVE. La prioridad actual permite avanzar con PAPER sin esperar a cerrar las decisiones de herramientas o modos automáticos futuros.
 
 ## Decisiones confirmadas
 
 1. El alcance incluye los tres componentes: indicador TradingView con alertas, integración con controles de riesgo y app con gestión de posiciones.
 2. Único venue inicial: **Hyperliquid**. Binance queda fuera del alcance inicial.
 3. Mark confirma cada entrada por defecto. Se desean también activación automática por sesión y funcionamiento automático continuo como capacidades futuras, con habilitación separada y los mismos límites. La sesión automática todavía requiere definir horario, vencimiento de autorización, reinicio y revocación.
-4. La primera prueba deseada es una operación real TINY con **$1 máximo de pérdida planificada**, incluyendo costos esperados y después de cumplir estrategia, sizing y protecciones. Esto no representa una garantía de pérdida realizada máxima ni autorización para activar hoy un adaptador sin verificar.
+4. **Prioridad actual: PAPER end-to-end esta noche.** ENTER simula la operación. La petición anterior de TINY con $1 máximo de pérdida planificada queda como objetivo posterior, después de cumplir los gates; no autoriza órdenes reales esta noche.
 5. Se mantienen: HYPE únicamente, LONG y SHORT estricto, E2=1.6R, primer retest, clearance, costos, 1 trade máximo por día, no forzar señales ni frecuencia.
 6. Tenencia máxima de **24 horas desde el fill**. Al llegar el plazo se inicia el cierre obligatorio; no se prolonga la posición esperando un mejor precio. Un fallo o retraso de ejecución debe quedar visible, no representarse como un fill inventado a tiempo.
 7. Mark está dispuesto a conseguir las herramientas necesarias. Presupuesto, cuentas, dominio, servidor y acceso a Linear aún no están definidos.
 8. `LIVE_EXECUTION=false` se mantiene. La solicitud de preparar una primera prueba real no sustituye las validaciones pendientes ni modifica automáticamente los gates de promoción del PRD/research plan.
+9. Fees provisionales: **4.5 bps taker por lado como ASSUMPTION**, configurables, etiquetados como no confirmados. Reemplazar por el tier real cuando se consulte la cuenta; no confundir el default con datos reales de Mark.
+10. **Sin gasto AWS autorizado.** Priorizar APIs públicas o proxy Bybit validado frente a Hyperliquid. Cualquier uso de S3 con costo requiere primero explicar datos adicionales y costo estimado.
+11. Mark autorizó versionar en `https://github.com/mharr92-hub/tradinghype`. Antes de push: verificar remote, branch, historia remota y ausencia de secretos/archivos sensibles. No sobrescribir trabajo remoto.
+12. TradingView es visualización/alerta; **no ejecuta órdenes**. SHORT puede habilitarse en RESEARCH/PAPER sin habilitar dinero real. No declarar rentabilidad por una prueba mecánica aprobada.
 
 ## Estado comprobado del workspace
 
@@ -41,15 +45,28 @@ La guarda de protección inspeccionada todavía verifica presencia de TP pero no
 - Secretos del venue solo en el backend. Señal/alerta nunca contiene autorización suficiente para ejecutar por sí sola.
 - Preparar y verificar PAPER/testnet antes de realizar la prueba TINY deseada. No activar automáticamente mainnet al aprobar tests unitarios.
 
-## Reparto propuesto para Claude y Codex
+## Reparto confirmado por Mark para Claude y Codex
 
-**Estado de coordinación: propuesta en archivo compartido; no se ha contactado directamente con la sesión de Claude ni recibido su aceptación.**
+**Mark confirmó este reparto en el texto compartido.** El historial muestra que Claude leyó este documento y comenzó a corregir protección. No existe un canal de mensajes directo entre las dos sesiones; coordinación por archivos y revisión de commits.
 
 Claude: confirmar los archivos que está editando; continuar como responsable principal de la implementación existente de backend. Corregir protección, persistencia y ejecución simulada con sus pruebas antes de abrir la ruta de escritura del venue. No cambiar el PRD a Binance.
 
 Codex: consolidar decisiones de producto, planificar dependencias y criterios de aceptación, auditar los cambios y validar tests/diffs; mantener el preview de TradingView separado de la versión final hasta compilar y certificar paridad. No editar módulos concurrentemente con Claude sin acordar propiedad.
 
-Ambos: un responsable por archivo; commits pequeños con tests; registrar el estado real y limitaciones; no atribuir cobertura a módulos todavía ausentes. Usar la última versión de los hallazgos, ya que algunos de AUDIT_002 fueron corregidos posteriormente.
+Ambos: un responsable por archivo; commits pequeños con tests; registrar el estado real y limitaciones; no atribuir cobertura a módulos todavía ausentes. Usar la última versión de los hallazgos, ya que algunos de AUDIT_002 fueron corregidos posteriormente. Evitar `git add -A` mientras la otra sesión escribe: seleccionar explícitamente los archivos propios para no publicar una revisión a medio escribir.
+
+Codex mantiene `backend/review_tests/test_review_003.py` y `docs/REVIEW_003_PAPER_BLOCKERS.md`. Claude corrige los módulos señalados, manteniendo las pruebas del reviewer como contrato. No reducir requisitos para volverlas verdes.
+
+## Orden de entrega de esta noche
+
+1. Adaptador Hyperliquid read-only.
+2. Scanner continuo con velas cerradas y mismo instante de evaluación en todos los TF.
+3. Forward logger, sin esperar el backtest histórico.
+4. Persistencia de señales, decisiones, posición y límites.
+5. PAPER engine con fills/costos/funding declarados.
+6. Signal Card mínima: precio, 4H/1H, VWAP, estados LONG/SHORT y FVG, espera/toque/confirmación/ready, Entry/SL/TP1.6R/Risk/beneficio estimado/costos/edad, ENTER/SKIP.
+7. TradingView visual con líneas 1R/1.6R/2R y paridad pendiente explícita.
+8. Prueba PAPER end-to-end. Objetivo: verificar mecánica, no demostrar edge.
 
 ## Preguntas de producto todavía abiertas
 

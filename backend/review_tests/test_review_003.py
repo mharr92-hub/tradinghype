@@ -6,7 +6,8 @@ This directory is separate from the implementer's tests to avoid edit conflicts.
 """
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 import httpx
 
@@ -19,6 +20,7 @@ from app.strategies.hype.common import Config
 from app.strategies.hype.engine import Signal
 from app.strategies.hype import target_clearance
 from app.strategies.indicators import Candle, BAR_5M_MS, BAR_1H_MS, BAR_4H_MS
+from app.services.scanner import Scanner
 
 DAY = 24 * BAR_1H_MS
 
@@ -64,13 +66,16 @@ class TestDailyLimits(unittest.TestCase):
 
 class TestClearanceCoverage(unittest.TestCase):
     def test_missing_obstacle_candle_cannot_turn_reject_into_accept(self):
-        hourly = [Candle(i * BAR_1H_MS, 90, 91, 89, 90, 1) for i in range(48)]
-        previous = [Candle(DAY + i * BAR_5M_MS, 90, 91, 89, 90, 1) for i in range(288)]
+        hourly = [Candle(i * BAR_1H_MS, 90, 91, 89, 90, 1) for i in range(20, 72)]
+        previous = [Candle(2 * DAY + i * BAR_5M_MS, 90, 91, 89, 90, 1) for i in range(288)]
         previous[120] = Candle(previous[120].ts, 90, 100.5, 89, 90, 1)
-        current = Candle(2 * DAY, 100, 100.1, 99.9, 100, 1)
+        current = Candle(3 * DAY, 100, 100.1, 99.9, 100, 1)
         full = previous + [current]
-        self.assertFalse(target_clearance.check(hourly, full, len(full)-1,
-                                               "LONG", 100, 99, Config())[0])
+        full_result = target_clearance.check(hourly, full, len(full)-1,
+                                             "LONG", 100, 99, Config())
+        self.assertFalse(full_result[0])
+        self.assertIsNotNone(full_result[2], "Complete input must locate the obstacle")
+        self.assertEqual(full_result[2].price, 100.5)
         partial = previous[:120] + previous[121:] + [current]
         self.assertFalse(target_clearance.check(hourly, partial, len(partial)-1,
                                                "LONG", 100, 99, Config())[0],
@@ -166,6 +171,35 @@ class TestProtectionAndEntry(unittest.TestCase):
         for mode in ("RESEARCH", "PAPER", "SHADOW", "TINY", "LIVE"):
             with self.subTest(mode=mode), self.assertRaises(guard.LiveExecutionDisabled):
                 guard.assert_can_send_orders(Settings(mode=mode, live_execution=False))
+
+
+class TestScannerContract(unittest.TestCase):
+    def test_expired_candidate_cannot_be_marked_executable(self):
+        data = Mock(spec=HyperliquidData)
+        data.venue_meta.return_value = SimpleNamespace(sz_decimals=2, max_leverage=3)
+        data.current_funding_rate.return_value = 0.0
+        data.multi_timeframe.return_value = ([], [], [Candle(0, 100, 101, 99, 100, 1)])
+        data.data_age_seconds.return_value = 91.0
+        signal = Signal(side="LONG", entry_ref=100, stop=99, tp=101.6, rr=1.6,
+                        risk_per_unit=1, cost_r=0.1, cost_frac=0.001,
+                        clearance_r=2, ts=0)
+        candidate = SimpleNamespace(signal=signal, checks={}, reason="rules_complete",
+                                    state="LONG_CANDIDATE", side_evaluated="LONG")
+        scanner = Scanner(Config(), data=data, logger=Mock())
+        # Keep a valid explicit paper balance, independently of the zero-collateral bug.
+        scanner._venue = VenueSpec(available_collateral_usd=1000, max_leverage=1)
+        with patch("app.services.scanner.engine.scan", return_value=candidate):
+            record = scanner.scan_once(now_ms=BAR_5M_MS + 91000)
+        self.assertFalse(record.executable, "A 91-second candidate is expired")
+
+    def test_data_failure_is_written_to_journal(self):
+        data = Mock(spec=HyperliquidData)
+        data.venue_meta.side_effect = MarketDataError("synthetic unavailable data")
+        logger = Mock()
+        scanner = Scanner(Config(), data=data, logger=logger)
+        with patch("builtins.print"):
+            scanner.run(iterations=1)
+        self.assertTrue(logger.write.called, "Printing an error is not durable logging")
 
 
 if __name__ == "__main__":
